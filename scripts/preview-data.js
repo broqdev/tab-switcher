@@ -137,6 +137,7 @@
   const focusEvent = event();
   const storageEvent = event();
   const preferenceKey = 'tab-switcher-preview-show-closed';
+  const searchModeKey = 'tab-switcher-preview-search-mode';
   const historyLimitKey = 'tab-switcher-preview-history-limit';
   const readHistoryLimit = (value = localStorage.getItem(historyLimitKey)) => {
     const limit = value === null ? undefined : Number(value);
@@ -146,7 +147,19 @@
   };
   const readPreference = (value = localStorage.getItem(preferenceKey)) =>
     value === 'true' ? true : value === 'false' ? false : undefined;
+  const readSearchMode = (value = localStorage.getItem(searchModeKey)) =>
+    value === 'exact' || value === 'regex' ? value : 'fuzzy';
   window.addEventListener('storage', (change) => {
+    if (change.key === searchModeKey || change.key === null)
+      storageEvent.emit(
+        {
+          searchMode: {
+            oldValue: readSearchMode(change.oldValue),
+            newValue: readSearchMode(),
+          },
+        },
+        'local',
+      );
     if (change.key === historyLimitKey || change.key === null)
       storageEvent.emit(
         {
@@ -243,9 +256,15 @@
           ),
           historyLimit: readHistoryLimit(),
           showClosedTabs: readPreference(),
+          searchMode: readSearchMode(),
         }),
         set: async (values) => {
           const changes = {};
+          if (['fuzzy', 'exact', 'regex'].includes(values.searchMode)) {
+            const oldValue = readSearchMode();
+            localStorage.setItem(searchModeKey, values.searchMode);
+            changes.searchMode = { oldValue, newValue: values.searchMode };
+          }
           if (typeof values.showClosedTabs === 'boolean') {
             const oldValue = readPreference();
             localStorage.setItem(preferenceKey, String(values.showClosedTabs));

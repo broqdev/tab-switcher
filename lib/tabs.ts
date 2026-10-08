@@ -1,5 +1,14 @@
 import Fuse from 'fuse.js';
 import {
+  decodeSearchUrl,
+  literalRanges,
+  matchedText,
+  normalizeSearchText,
+  regexRanges,
+  type MatchedText,
+  type MatchRange,
+} from './search-text';
+import {
   HISTORY_KEY,
   SESSION_KEY,
   readClosedTabs,
@@ -26,6 +35,20 @@ export type SearchMode = 'fuzzy' | 'exact' | 'regex';
 export interface SearchOptions {
   mode?: SearchMode;
   showClosed?: boolean;
+}
+
+export interface TabSearchResult<T extends TabEntry = TabEntry> {
+  entry: T;
+  title: MatchedText;
+  url: MatchedText;
+}
+
+interface TermMatch {
+  title: MatchRange[];
+  url: [MatchRange[], MatchRange[]];
+  titleMatched: boolean;
+  literalTitle: boolean;
+  literal: boolean;
 }
 
 export function normalizeTabs(tabs: chrome.tabs.Tab[]): OpenTab[] {
@@ -67,24 +90,61 @@ export function sortByRecent<T extends TabEntry>(tabs: T[]): T[] {
 export function filterTabs<T extends TabEntry>(
   tabs: T[],
   query: string,
-  { mode = 'fuzzy', showClosed = true }: SearchOptions = {},
+  options: SearchOptions = {},
 ): T[] {
+  return searchTabs(tabs, query, options).map(({ entry }) => entry);
+}
+
+export function searchTabs<T extends TabEntry>(
+  tabs: T[],
+  query: string,
+  { mode = 'fuzzy', showClosed = true }: SearchOptions = {},
+): TabSearchResult<T>[] {
   const ordered = sortByRecent(
     showClosed ? tabs : tabs.filter((tab) => tab.kind === 'open'),
   );
-  if (mode === 'regex') {
-    if (!query) return ordered;
-    const pattern = new RegExp(query, 'iu');
-    return filterTitleFirst(ordered, (text) => pattern.test(text));
-  }
-  if (mode === 'exact') {
+  if (mode === 'regex' || mode === 'exact') {
     const phrase = normalizeSearchText(query.trim());
-    return filterTitleFirst(ordered, (text) =>
-      normalizeSearchText(text).includes(phrase),
-    );
+    if (mode === 'regex' ? !query : !phrase)
+      return ordered.map((entry) => buildSearchResult(entry));
+    const pattern = mode === 'regex' ? new RegExp(query, 'iu') : undefined;
+    const rangesFor = (text: string) =>
+      pattern
+        ? regexRanges(text, pattern)
+        : literalRanges(normalizeSearchText(text), phrase);
+    return ordered
+      .flatMap((entry) => {
+        const title = rangesFor(entry.title);
+        const url: [MatchRange[], MatchRange[]] = [
+          rangesFor(entry.url),
+          rangesFor(decodeSearchUrl(entry.url)),
+        ];
+        // Zero-width regex matches include an entry but have no visible glyphs.
+        const titleMatched = pattern
+          ? pattern.test(entry.title)
+          : title.length > 0;
+        if (
+          !titleMatched &&
+          !(pattern
+            ? [entry.url, decodeSearchUrl(entry.url)].some((text) =>
+                pattern.test(text),
+              )
+            : url.some((ranges) => ranges.length > 0))
+        )
+          return [];
+        return [
+          {
+            result: buildSearchResult(entry, title, url, !pattern),
+            titleMatched,
+          },
+        ];
+      })
+      .sort((a, b) => Number(b.titleMatched) - Number(a.titleMatched))
+      .map(({ result }) => result);
   }
   const terms = normalizeSearchText(query).trim().split(/\s+/u).filter(Boolean);
-  if (terms.length === 0) return ordered;
+  if (terms.length === 0)
+    return ordered.map((entry) => buildSearchResult(entry));
 
   const searchTerms = terms.map((term) => {
     const hostname = searchHostname(term);
@@ -124,24 +184,24 @@ export function filterTabs<T extends TabEntry>(
     ? Fuse.createIndex(options.keys, records)
     : undefined;
   const matches = searchTerms.map(({ term, hostname, literalOnly }) => {
-    const literalTitleKeys = new Set<string>();
-    const literalKeys = new Set<string>();
+    const byKey = new Map<string, TermMatch>();
     for (const record of records) {
-      if (record.title.includes(term)) {
-        literalTitleKeys.add(record.entry.key);
-        literalKeys.add(record.entry.key);
-      } else if (record.url.some((text) => text.includes(term))) {
-        literalKeys.add(record.entry.key);
+      const title = literalRanges(record.title, term);
+      const url: [MatchRange[], MatchRange[]] = [
+        literalRanges(record.url[0]!, term),
+        literalRanges(record.url[1]!, term),
+      ];
+      if (title.length || url.some((ranges) => ranges.length)) {
+        byKey.set(record.entry.key, {
+          title,
+          url,
+          titleMatched: title.length > 0,
+          literalTitle: title.length > 0,
+          literal: true,
+        });
       }
     }
-    if (literalOnly)
-      return {
-        hostname,
-        literalKeys,
-        literalTitleKeys,
-        titleKeys: literalTitleKeys,
-        keys: literalKeys,
-      };
+    if (literalOnly) return { hostname, byKey };
     const search = new Fuse(
       records,
       {
@@ -151,15 +211,35 @@ export function filterTabs<T extends TabEntry>(
       },
       index,
     );
-    const titleKeys = new Set(literalTitleKeys);
-    const keys = new Set(literalKeys);
     for (const result of search.search(term)) {
-      keys.add(result.item.entry.key);
-      if (result.matches?.some((match) => match.key === 'title')) {
-        titleKeys.add(result.item.entry.key);
+      const match =
+        byKey.get(result.item.entry.key) ??
+        ({
+          title: [],
+          url: [[], []],
+          titleMatched: false,
+          literalTitle: false,
+          literal: false,
+        } satisfies TermMatch);
+      for (const field of result.matches ?? []) {
+        const ranges: MatchRange[] = field.indices.map(([start, end]) => [
+          start,
+          end + 1,
+        ]);
+        if (field.key === 'title') {
+          match.titleMatched = true;
+          if (!match.title.length) match.title = ranges;
+        } else if (
+          field.key === 'url' &&
+          (field.refIndex === 0 || field.refIndex === 1)
+        ) {
+          if (!match.url[field.refIndex].length)
+            match.url[field.refIndex] = ranges;
+        }
       }
+      byKey.set(result.item.entry.key, match);
     }
-    return { hostname, literalKeys, literalTitleKeys, titleKeys, keys };
+    return { hostname, byKey };
   });
   return (
     records
@@ -168,17 +248,20 @@ export function filterTabs<T extends TabEntry>(
         let literalTitleMatches = 0;
         let hostMatches = 0;
         let fuzzyMatches = 0;
-        for (const {
-          hostname,
-          literalKeys,
-          literalTitleKeys,
-          titleKeys,
-          keys,
-        } of matches) {
-          if (!keys.has(record.entry.key)) return [];
-          if (titleKeys.has(record.entry.key)) titleMatches++;
-          if (literalTitleKeys.has(record.entry.key)) literalTitleMatches++;
-          if (!literalKeys.has(record.entry.key)) fuzzyMatches++;
+        const title: MatchRange[] = [];
+        const url: [MatchRange[], MatchRange[]] = [[], []];
+        const urlCoverage: [number, number] = [0, 0];
+        for (const { hostname, byKey } of matches) {
+          const match = byKey.get(record.entry.key);
+          if (!match) return [];
+          if (match.titleMatched) titleMatches++;
+          if (match.literalTitle) literalTitleMatches++;
+          if (!match.literal) fuzzyMatches++;
+          title.push(...match.title);
+          for (const index of [0, 1] as const) {
+            url[index].push(...match.url[index]);
+            if (match.url[index].length) urlCoverage[index]++;
+          }
           if (
             hostname &&
             (record.hostname === hostname ||
@@ -190,6 +273,9 @@ export function filterTabs<T extends TabEntry>(
         return [
           {
             entry: record.entry,
+            title,
+            url,
+            urlCoverage,
             titleMatches,
             literalTitleMatches,
             hostMatches,
@@ -205,22 +291,32 @@ export function filterTabs<T extends TabEntry>(
           b.hostMatches - a.hostMatches ||
           a.fuzzyMatches - b.fuzzyMatches,
       )
-      .map(({ entry }) => entry)
+      .map(({ entry, title, url, urlCoverage }) =>
+        buildSearchResult(entry, title, url, true, urlCoverage),
+      )
   );
 }
 
-function filterTitleFirst<T extends TabEntry>(
-  ordered: T[],
-  matches: (text: string) => boolean,
-): T[] {
-  const titleMatches: T[] = [];
-  const urlMatches: T[] = [];
-  for (const entry of ordered) {
-    if (matches(entry.title)) titleMatches.push(entry);
-    else if (matches(entry.url) || matches(decodeSearchUrl(entry.url)))
-      urlMatches.push(entry);
-  }
-  return [...titleMatches, ...urlMatches];
+function buildSearchResult<T extends TabEntry>(
+  entry: T,
+  title: MatchRange[] = [],
+  url: [MatchRange[], MatchRange[]] = [[], []],
+  normalized = true,
+  coverage: [number, number] = [
+    Number(url[0].length > 0),
+    Number(url[1].length > 0),
+  ],
+): TabSearchResult<T> {
+  const index = coverage[0] > coverage[1] ? 0 : 1;
+  return {
+    entry,
+    title: matchedText(entry.title, title, normalized),
+    url: matchedText(
+      index === 0 ? entry.url : decodeSearchUrl(entry.url),
+      url[index],
+      normalized,
+    ),
+  };
 }
 
 function searchHostname(term: string): string | undefined {
@@ -236,21 +332,6 @@ function urlHostname(url: string): string {
     return new URL(url).hostname.toLowerCase().replace(/\.$/u, '');
   } catch {
     return '';
-  }
-}
-
-function normalizeSearchText(text: string): string {
-  return text
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/gu, '')
-    .toLowerCase();
-}
-
-function decodeSearchUrl(url: string): string {
-  try {
-    return decodeURIComponent(url);
-  } catch {
-    return url;
   }
 }
 

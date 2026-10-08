@@ -3,6 +3,7 @@ import {
   expect,
   chromium,
   type BrowserContext,
+  type Locator,
   type Page,
 } from '@playwright/test';
 import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -46,6 +47,31 @@ async function openSettings(page: Page) {
   await expect(
     page.getByRole('region', { name: 'Settings', exact: true }),
   ).toBeVisible();
+}
+
+async function expectReadableHighlight(mark: Locator) {
+  const { backgroundAlpha, contrast } = await mark.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const foreground = style.color.match(/[\d.]+/g)!.map(Number);
+    const background = style.backgroundColor.match(/[\d.]+/g)!.map(Number);
+    const luminance = (channels: number[]) => {
+      const linear = channels.slice(0, 3).map((channel) => {
+        const value = channel / 255;
+        return value <= 0.04045
+          ? value / 12.92
+          : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
+    };
+    const light = Math.max(luminance(foreground), luminance(background));
+    const dark = Math.min(luminance(foreground), luminance(background));
+    return {
+      backgroundAlpha: background[3] ?? 1,
+      contrast: (light + 0.05) / (dark + 0.05),
+    };
+  });
+  expect(backgroundAlpha).toBe(1);
+  expect(contrast).toBeGreaterThanOrEqual(4.5);
 }
 
 const test = base.extend<{ popup: Page }>({
@@ -250,6 +276,144 @@ test('search ranks titles before URLs and retains domain priority within URL res
     ]);
 });
 
+test('background highlights literal, fuzzy, exact, and regex title matches and clears highlights', async ({
+  popup,
+}, testInfo) => {
+  await popup.evaluate(async () => {
+    for (const path of ['typescript', 'release']) {
+      await chrome.tabs.create({
+        url: `http://127.0.0.1:4173/${path}`,
+        active: false,
+      });
+    }
+  });
+  const handbook = popup.getByRole('option', {
+    name: 'TypeScript Handbook',
+    exact: true,
+  });
+  await expect(handbook).toBeVisible();
+  const search = popup.getByRole('combobox');
+  await search.pressSequentially('typescrpt');
+  await expect(handbook.locator('.tab-title mark')).toHaveText([
+    'TypeScr',
+    'pt',
+  ]);
+  const highlight = handbook.locator('.tab-title mark').first();
+  await handbook.hover();
+  await expect(handbook).toHaveAttribute('aria-selected', 'true');
+  await expectReadableHighlight(highlight);
+  await popup.getByRole('option', { name: 'TypeScript Release Notes' }).hover();
+  await expect(handbook).toHaveAttribute('aria-selected', 'false');
+  await expectReadableHighlight(highlight);
+  await popup
+    .locator('main')
+    .screenshot({ path: testInfo.outputPath('search-highlights.png') });
+  await search.fill('typescript');
+  await expect(handbook.locator('.tab-title mark')).toHaveText(['TypeScript']);
+  await popup.getByRole('button', { name: 'Exact match', exact: true }).click();
+  await search.fill('TypeScript Handbook');
+  await expect(handbook.locator('.tab-title mark')).toHaveText([
+    'TypeScript Handbook',
+  ]);
+  await popup
+    .getByRole('button', { name: 'Use regular expression', exact: true })
+    .click();
+  await search.fill('TypeScript|Handbook');
+  await expect(handbook.locator('.tab-title mark')).toHaveText([
+    'TypeScript',
+    'Handbook',
+  ]);
+  await search.fill('^');
+  await expect(handbook).toBeVisible();
+  await expect(popup.locator('mark')).toHaveCount(0);
+  await search.fill('[');
+  await expect(popup.getByRole('alert')).toHaveText(
+    'Invalid regular expression.',
+  );
+  await expect(popup.locator('mark')).toHaveCount(0);
+  await search.fill('');
+  await expect(handbook).toBeVisible();
+  await expect(popup.locator('mark')).toHaveCount(0);
+});
+
+test('highlights normalized titles and visible URL matches in closed history safely', async ({
+  popup,
+}, testInfo) => {
+  const readingId = await popup.evaluate(async () => {
+    for (const path of ['desk', 'handbook']) {
+      await chrome.tabs.create({
+        url: `http://127.0.0.1:4173/search/${path}`,
+        active: false,
+      });
+    }
+    const reading = await chrome.tabs.create({
+      url: 'http://127.0.0.1:4173/search/reading?topic=机器学习',
+      active: false,
+    });
+    return reading.id!;
+  });
+  const search = popup.getByRole('combobox');
+  const reading = popup.getByRole('option', {
+    name: 'Research Library',
+    exact: true,
+  });
+  await expect(reading).toBeVisible();
+  await search.fill('cafe');
+  await expect(popup.getByRole('option').locator('.tab-title mark')).toHaveText(
+    ['Café'],
+  );
+  await search.fill('typescript');
+  await expect(popup.getByRole('option').locator('.tab-title mark')).toHaveText(
+    ['ＴｙｐｅＳｃｒｉｐｔ'],
+  );
+  await search.fill('机器学习');
+  await expect(reading.locator('.tab-domain mark')).toHaveText(['机器学习']);
+  const metadata = await reading.locator('.tab-domain').textContent();
+  expect(metadata).toContain('topic=机器学习');
+  await popup.evaluate(async (id) => chrome.tabs.remove(id), readingId);
+  const closed = popup.getByRole('option', {
+    name: 'Research Library, closed tab',
+    exact: true,
+  });
+  await expect(closed.locator('.tab-domain mark')).toHaveText(['机器学习']);
+  await expectReadableHighlight(closed.locator('.tab-domain mark'));
+  await popup
+    .locator('main')
+    .screenshot({ path: testInfo.outputPath('url-highlights.png') });
+  await search.fill('%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0');
+  await expect(closed.locator('.tab-domain mark')).toHaveText([
+    '%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0',
+  ]);
+  await search.fill('');
+  await expect(closed.locator('.tab-domain')).toHaveText('127.0.0.1');
+  await expect(popup.locator('mark')).toHaveCount(0);
+  await popup.evaluate(async () => {
+    await chrome.storage.local.set({
+      closedTabHistory: [
+        {
+          kind: 'closed',
+          key: 'closed-markup',
+          title: '<img src=x onerror=alert(1)>',
+          url: 'https://example.org/image',
+          lastAccessed: Date.now(),
+          closedAt: Date.now(),
+          incognito: false,
+        },
+      ],
+    });
+  });
+  await search.fill('img');
+  const markup = popup.getByRole('option', {
+    name: '<img src=x onerror=alert(1)>, closed tab',
+    exact: true,
+  });
+  await expect(markup.locator('.tab-title mark')).toHaveText(['img']);
+  await expect(markup.locator('.tab-title img')).toHaveCount(0);
+  await expect(markup.locator('.tab-title')).toHaveText(
+    '<img src=x onerror=alert(1)>',
+  );
+});
+
 test('search toggles switch between fuzzy, exact phrase, and regex without clearing text', async ({
   popup,
 }) => {
@@ -403,7 +567,7 @@ test('closed-tab checkbox filters every search mode and handles live closures', 
   ).toHaveAttribute('aria-pressed', 'true');
 });
 
-test('remembers the closed-tab preference on reload and syncs across Chrome windows', async ({
+test('remembers search preferences on reopen and syncs across Chrome windows', async ({
   popup,
   context,
 }) => {
@@ -431,6 +595,19 @@ test('remembers the closed-tab preference on reload and syncs across Chrome wind
     exact: true,
   });
   await expect(checkbox).toBeChecked();
+  const exact = popup.getByRole('button', { name: 'Exact match', exact: true });
+  const regex = popup.getByRole('button', {
+    name: 'Use regular expression',
+    exact: true,
+  });
+  await exact.click();
+  await expect
+    .poll(() =>
+      popup.evaluate(
+        async () => (await chrome.storage.local.get('searchMode')).searchMode,
+      ),
+    )
+    .toBe('exact');
   await checkbox.uncheck();
   await expect
     .poll(() =>
@@ -443,6 +620,8 @@ test('remembers the closed-tab preference on reload and syncs across Chrome wind
   await popup.reload();
   await expect(checkbox).toBeEnabled();
   await expect(checkbox).not.toBeChecked();
+  await expect(exact).toHaveAttribute('aria-pressed', 'true');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
   await expect(closed).toHaveCount(0);
 
   const opened = context.waitForEvent('page');
@@ -456,6 +635,15 @@ test('remembers the closed-tab preference on reload and syncs across Chrome wind
   });
   await expect(otherCheckbox).toBeEnabled();
   await expect(otherCheckbox).not.toBeChecked();
+  const otherExact = other.getByRole('button', {
+    name: 'Exact match',
+    exact: true,
+  });
+  const otherRegex = other.getByRole('button', {
+    name: 'Use regular expression',
+    exact: true,
+  });
+  await expect(otherExact).toHaveAttribute('aria-pressed', 'true');
   expect(
     await other.evaluate(
       async () => (await chrome.tabs.getCurrent())!.windowId,
@@ -466,9 +654,7 @@ test('remembers the closed-tab preference on reload and syncs across Chrome wind
     ),
   );
   const search = popup.getByRole('combobox');
-  const exact = popup.getByRole('button', { name: 'Exact match', exact: true });
   await search.fill('TypeScript Release');
-  await exact.click();
   await otherCheckbox.check();
   await expect(checkbox).toBeChecked();
   await expect(closed).toBeVisible();
@@ -477,87 +663,183 @@ test('remembers the closed-tab preference on reload and syncs across Chrome wind
   await checkbox.uncheck();
   await expect(otherCheckbox).not.toBeChecked();
   await expect(other.locator('[data-entry-kind="closed"]')).toHaveCount(0);
+  await other.getByRole('combobox').fill('Release');
+  await otherRegex.click();
+  await expect(regex).toHaveAttribute('aria-pressed', 'true');
+  await expect(exact).toHaveAttribute('aria-pressed', 'false');
+  await expect(otherExact).toHaveAttribute('aria-pressed', 'false');
+  await expect(search).toHaveValue('TypeScript Release');
+  await expect(other.getByRole('combobox')).toHaveValue('Release');
+  await regex.click();
+  await expect(otherRegex).toHaveAttribute('aria-pressed', 'false');
+  await expect(otherExact).toHaveAttribute('aria-pressed', 'false');
+  await otherRegex.click();
+  await expect(regex).toHaveAttribute('aria-pressed', 'true');
+  await expect(otherRegex).toBeEnabled();
+  await other.close();
+  const reopened = await context.newPage();
+  await reopened.goto(popup.url());
+  await expect(
+    reopened.getByRole('button', {
+      name: 'Use regular expression',
+      exact: true,
+    }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(
+    reopened.getByRole('checkbox', { name: 'Show closed tabs', exact: true }),
+  ).not.toBeChecked();
+  await reopened.close();
 });
 
-test('remembers the closed-tab preference after a full browser restart', async () => {
-  const profile = await mkdtemp(join(tmpdir(), 'tab-switcher-preference-'));
-  let context: BrowserContext | undefined;
-  try {
-    context = await launchExtension(profile);
-    const popup = await openPopup(context);
-    await popup
-      .getByRole('checkbox', { name: 'Show closed tabs', exact: true })
-      .uncheck();
+for (const mode of ['exact', 'regex'] as const) {
+  test(`remembers ${mode} and closed-tab preferences after a full browser restart`, async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'tab-switcher-preference-'));
+    let context: BrowserContext | undefined;
+    try {
+      context = await launchExtension(profile);
+      const popup = await openPopup(context);
+      await popup
+        .getByRole('button', {
+          name: mode === 'exact' ? 'Exact match' : 'Use regular expression',
+          exact: true,
+        })
+        .click();
+      await popup
+        .getByRole('checkbox', { name: 'Show closed tabs', exact: true })
+        .uncheck();
+      await expect
+        .poll(() =>
+          popup.evaluate(
+            async () =>
+              (await chrome.storage.local.get('showClosedTabs')).showClosedTabs,
+          ),
+        )
+        .toBe(false);
+      await expect
+        .poll(() =>
+          popup.evaluate(
+            async () =>
+              (await chrome.storage.local.get('searchMode')).searchMode,
+          ),
+        )
+        .toBe(mode);
+      await context.close();
+      context = undefined;
+      context = await launchExtension(profile);
+      const reopened = await openPopup(context);
+      const checkbox = reopened.getByRole('checkbox', {
+        name: 'Show closed tabs',
+        exact: true,
+      });
+      await expect(checkbox).toBeEnabled();
+      await expect(checkbox).not.toBeChecked();
+      await expect(
+        reopened.getByRole('button', {
+          name: mode === 'exact' ? 'Exact match' : 'Use regular expression',
+          exact: true,
+        }),
+      ).toHaveAttribute('aria-pressed', 'true');
+      await expect(
+        reopened.getByRole('button', {
+          name: mode === 'exact' ? 'Use regular expression' : 'Exact match',
+          exact: true,
+        }),
+      ).toHaveAttribute('aria-pressed', 'false');
+    } finally {
+      await context?.close();
+      await rm(profile, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const preferenceKey of ['showClosedTabs', 'searchMode']) {
+  test(`a live ${preferenceKey} preference change wins over a delayed initial storage read`, async ({
+    popup,
+  }) => {
+    await popup.evaluate(
+      async (key) =>
+        chrome.storage.local.set({
+          searchMode: 'exact',
+          showClosedTabs: key !== 'searchMode',
+        }),
+      preferenceKey,
+    );
+    await popup.addInitScript((preferenceKey) => {
+      const state = window as typeof window & {
+        releasePreference?: () => void;
+      };
+      const get = chrome.storage.local.get.bind(chrome.storage.local);
+      const delayedGet = (
+        key: string | string[],
+      ): Promise<Record<string, unknown>> => {
+        const includesPreference =
+          typeof key === 'string'
+            ? key === preferenceKey
+            : key.includes(preferenceKey);
+        if (!includesPreference) return get<Record<string, unknown>>(key);
+        return get<Record<string, unknown>>(key).then(
+          (snapshot) =>
+            new Promise<Record<string, unknown>>((resolve) => {
+              state.releasePreference = () => resolve(snapshot);
+            }),
+        );
+      };
+      chrome.storage.local.get = delayedGet as typeof chrome.storage.local.get;
+    }, preferenceKey);
+    await popup.reload();
+    const control =
+      preferenceKey === 'searchMode'
+        ? popup.getByRole('button', {
+            name: 'Use regular expression',
+            exact: true,
+          })
+        : popup.getByRole('checkbox', {
+            name: 'Show closed tabs',
+            exact: true,
+          });
+    const expectSavedPreference = () =>
+      preferenceKey === 'searchMode'
+        ? expect(control).toHaveAttribute('aria-pressed', 'true')
+        : expect(control).not.toBeChecked();
+    await expect(control).toBeDisabled();
     await expect
       .poll(() =>
         popup.evaluate(
-          async () =>
-            (await chrome.storage.local.get('showClosedTabs')).showClosedTabs,
+          () =>
+            typeof (
+              window as typeof window & { releasePreference?: () => void }
+            ).releasePreference,
         ),
       )
-      .toBe(false);
-    await context.close();
-    context = undefined;
-    context = await launchExtension(profile);
-    const reopened = await openPopup(context);
-    const checkbox = reopened.getByRole('checkbox', {
-      name: 'Show closed tabs',
-      exact: true,
-    });
-    await expect(checkbox).toBeEnabled();
-    await expect(checkbox).not.toBeChecked();
-  } finally {
-    await context?.close();
-    await rm(profile, { recursive: true, force: true });
-  }
-});
-
-test('a live preference change wins over a delayed initial storage read', async ({
-  popup,
-}) => {
-  await popup.addInitScript(() => {
-    const state = window as typeof window & { releasePreference?: () => void };
-    const get = chrome.storage.local.get.bind(chrome.storage.local);
-    const delayedGet = (key: string): Promise<Record<string, unknown>> => {
-      if (key !== 'showClosedTabs') return get<Record<string, unknown>>(key);
-      return get<Record<string, unknown>>(key).then(
-        (snapshot) =>
-          new Promise<Record<string, unknown>>((resolve) => {
-            state.releasePreference = () => resolve(snapshot);
-          }),
+      .toBe('function');
+    await popup.evaluate(async (key) => {
+      await chrome.storage.local.set({
+        [key]: key === 'searchMode' ? 'regex' : false,
+      });
+    }, preferenceKey);
+    // One live field is known, but the other still needs the initial snapshot.
+    await expect(control).toBeDisabled();
+    await expectSavedPreference();
+    await popup.evaluate(async () => {
+      (window as typeof window & { releasePreference?: () => void })
+        .releasePreference!();
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       );
-    };
-    chrome.storage.local.get = delayedGet as typeof chrome.storage.local.get;
-  });
-  await popup.reload();
-  const checkbox = popup.getByRole('checkbox', {
-    name: 'Show closed tabs',
-    exact: true,
-  });
-  await expect(checkbox).toBeDisabled();
-  await expect
-    .poll(() =>
-      popup.evaluate(
-        () =>
-          typeof (window as typeof window & { releasePreference?: () => void })
-            .releasePreference,
-      ),
-    )
-    .toBe('function');
-  await popup.evaluate(async () => {
-    await chrome.storage.local.set({ showClosedTabs: false });
-  });
-  await expect(checkbox).toBeEnabled();
-  await expect(checkbox).not.toBeChecked();
-  await popup.evaluate(async () => {
-    (window as typeof window & { releasePreference?: () => void })
-      .releasePreference!();
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    });
+    await expect(control).toBeEnabled();
+    await expectSavedPreference();
+    await expect(
+      popup.getByRole('checkbox', { name: 'Show closed tabs', exact: true }),
+    ).not.toBeChecked();
+    await expect(
+      popup.getByRole('button', { name: 'Exact match', exact: true }),
+    ).toHaveAttribute(
+      'aria-pressed',
+      preferenceKey === 'searchMode' ? 'false' : 'true',
     );
   });
-  await expect(checkbox).not.toBeChecked();
-});
+}
 
 test('a failed preference write restores the saved value and allows retry', async ({
   popup,
@@ -591,6 +873,181 @@ test('a failed preference write restores the saved value and allows retry', asyn
       ),
     )
     .toBe(false);
+});
+
+test('invalid and removed search-mode preferences fall back to fuzzy search', async ({
+  popup,
+}) => {
+  const exact = popup.getByRole('button', { name: 'Exact match', exact: true });
+  const regex = popup.getByRole('button', {
+    name: 'Use regular expression',
+    exact: true,
+  });
+  await expect(exact).toHaveAttribute('aria-pressed', 'false');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+  await regex.click();
+  await expect
+    .poll(() =>
+      popup.evaluate(
+        async () => (await chrome.storage.local.get('searchMode')).searchMode,
+      ),
+    )
+    .toBe('regex');
+  await popup.evaluate(async () =>
+    chrome.storage.local.set({ searchMode: 'unknown' }),
+  );
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+  await popup.reload();
+  await expect(exact).toBeEnabled();
+  await expect(exact).toHaveAttribute('aria-pressed', 'false');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+  await exact.click();
+  await expect
+    .poll(() =>
+      popup.evaluate(
+        async () => (await chrome.storage.local.get('searchMode')).searchMode,
+      ),
+    )
+    .toBe('exact');
+  await popup.evaluate(async () => chrome.storage.local.remove('searchMode'));
+  await expect(exact).toHaveAttribute('aria-pressed', 'false');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('a failed search-mode preference write restores the saved mode and allows retry', async ({
+  popup,
+}) => {
+  const exact = popup.getByRole('button', { name: 'Exact match', exact: true });
+  const regex = popup.getByRole('button', {
+    name: 'Use regular expression',
+    exact: true,
+  });
+  await regex.click();
+  await expect
+    .poll(() =>
+      popup.evaluate(
+        async () => (await chrome.storage.local.get('searchMode')).searchMode,
+      ),
+    )
+    .toBe('regex');
+  await popup.evaluate(() => {
+    const set = chrome.storage.local.set.bind(chrome.storage.local);
+    chrome.storage.local.set = ((values: Record<string, unknown>) => {
+      if (!('searchMode' in values)) return set(values);
+      chrome.storage.local.set = set;
+      return Promise.reject(new Error('Storage unavailable'));
+    }) as typeof chrome.storage.local.set;
+  });
+  await exact.click();
+  await expect(popup.getByRole('alert')).toHaveText(
+    'Could not save this preference. Try again.',
+  );
+  await expect(exact).toHaveAttribute('aria-pressed', 'false');
+  await expect(regex).toHaveAttribute('aria-pressed', 'true');
+  await expect(exact).toBeEnabled();
+  await exact.click();
+  await expect(exact).toHaveAttribute('aria-pressed', 'true');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+  await expect
+    .poll(() =>
+      popup.evaluate(
+        async () => (await chrome.storage.local.get('searchMode')).searchMode,
+      ),
+    )
+    .toBe('exact');
+});
+
+test('a failed preferences read uses defaults and can recover on save', async ({
+  popup,
+}) => {
+  await popup.addInitScript(() => {
+    const get = chrome.storage.local.get.bind(chrome.storage.local);
+    chrome.storage.local.get = ((key: string | string[]) =>
+      (
+        typeof key === 'string'
+          ? key === 'searchMode'
+          : key.includes('searchMode')
+      )
+        ? Promise.reject(new Error('Storage unavailable'))
+        : get<Record<string, unknown>>(key)) as typeof chrome.storage.local.get;
+  });
+  await popup.reload();
+  const exact = popup.getByRole('button', { name: 'Exact match', exact: true });
+  const regex = popup.getByRole('button', {
+    name: 'Use regular expression',
+    exact: true,
+  });
+  await expect(exact).toBeEnabled();
+  await expect(exact).toHaveAttribute('aria-pressed', 'false');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+  await expect(popup.getByRole('alert')).toHaveText(
+    'Could not load this preference. Try toggling it again.',
+  );
+  await exact.click();
+  await expect(exact).toHaveAttribute('aria-pressed', 'true');
+  await expect(exact).toBeEnabled();
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+});
+
+test('a failed preference save preserves a live change to the other preference', async ({
+  popup,
+  context,
+}) => {
+  const exact = popup.getByRole('button', { name: 'Exact match', exact: true });
+  const regex = popup.getByRole('button', {
+    name: 'Use regular expression',
+    exact: true,
+  });
+  const checkbox = popup.getByRole('checkbox', {
+    name: 'Show closed tabs',
+    exact: true,
+  });
+  await exact.click();
+  await expect(exact).toBeEnabled();
+  const other = await context.newPage();
+  await other.goto(popup.url());
+  await expect(
+    other.getByRole('button', { name: 'Exact match', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await popup.evaluate(() => {
+    const state = window as typeof window & { rejectPreference?: () => void };
+    const set = chrome.storage.local.set.bind(chrome.storage.local);
+    chrome.storage.local.set = ((values: Record<string, unknown>) => {
+      if (!('searchMode' in values)) return set(values);
+      chrome.storage.local.set = set;
+      return new Promise<void>((_, reject) => {
+        state.rejectPreference = () => reject(new Error('Storage unavailable'));
+      });
+    }) as typeof chrome.storage.local.set;
+  });
+  await regex.click();
+  await expect(regex).toBeDisabled();
+  await expect(exact).toBeDisabled();
+  await expect(checkbox).toBeDisabled();
+  await other
+    .getByRole('checkbox', { name: 'Show closed tabs', exact: true })
+    .uncheck();
+  await expect(checkbox).not.toBeChecked();
+  await popup.evaluate(() => {
+    (window as typeof window & { rejectPreference?: () => void })
+      .rejectPreference!();
+  });
+  await expect(exact).toBeEnabled();
+  await expect(exact).toHaveAttribute('aria-pressed', 'true');
+  await expect(regex).toHaveAttribute('aria-pressed', 'false');
+  await expect(checkbox).not.toBeChecked();
+  await expect(popup.getByRole('alert')).toHaveText(
+    'Could not save this preference. Try again.',
+  );
+  await regex.click();
+  await expect(
+    other.getByRole('button', { name: 'Use regular expression', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await expect(checkbox).not.toBeChecked();
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+  await other.close();
 });
 
 test('short title terms and paper identifiers exclude unrelated open and closed entries', async ({

@@ -1,0 +1,9 @@
+Use case: logo-brand
+Asset type: production Chrome extension app icon for "Tab Switcher"; one square master image to downsample to 16, 24, 32, 48, 64, 128, 256, and 512 pixels.
+Primary request: create a polished minimalist icon that communicates switching between browser tabs, with an exceptionally strong silhouette at 16px.
+Scene/backdrop: genuinely transparent canvas outside a rounded-square deep forest-green tile. The tile occupies about 88% of the square canvas, centered, with balanced transparent margins.
+Subject: exactly two overlapping browser-tab cards, slightly offset diagonally. Each card has a simple unmistakable tab-shaped raised shoulder along its top edge. The rear tab is muted mint green; the front tab is warm off-white. A single thick forest-green right-pointing arrow is centered on the front tab, communicating switching. The arrow must be bold and readable after downsampling.
+Style/medium: crisp flat graphic design, clean geometric curves, optically balanced proportions, generous solid shapes and negative space, restrained professional productivity-tool identity. Match a minimalist green Chrome-style popup.
+Color palette: forest green approximately #174a2d, mint approximately #95d69a, warm off-white approximately #f0f3e9.
+Composition/framing: centered square master, icon only, large readable mark, no tiny interior details.
+Constraints: a single finished icon, not a contact sheet or mockup; preserve real transparency outside the tile; sharp clean antialiased edges; no text, letters, numbers, branding, watermark, gradients, glow, textures, 3D effects, drop shadows, browser chrome, or extra symbols. Do not include a magnifying glass. Avoid thin outlines and excessive empty space.

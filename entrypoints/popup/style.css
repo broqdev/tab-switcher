@@ -8,13 +8,16 @@
   --popup-border: #343934;
   --divider: #455745;
   --scrollbar-thumb: #95d69a;
+  --match-background: #e8c568;
+  --match-text: #171d18;
   font-family: system-ui, sans-serif;
   font-size: 13px;
   font-style: normal;
   font-weight: 400;
   line-height: normal;
   color: var(--primary-text);
-  background: transparent;
+  /* Chrome's popup host is opaque; paint the canvas through every corner. */
+  background: var(--popup-background);
   color-scheme: dark;
 }
 
@@ -24,6 +27,7 @@
 body {
   width: 400px;
   margin: 0;
+  background: var(--popup-background);
 }
 button,
 input {
@@ -43,9 +47,10 @@ button:disabled {
   height: 600px;
   overflow: hidden;
   background: var(--popup-background);
-  border-radius: 12px;
-  /* An inset outline preserves Chrome's 20px content inset. The browser
-     separately draws the extension popup's native window frame. */
+  /* Chrome controls the outer frame. Rounding this inner surface would leave
+     corner cutouts inside its rectangular host. Keep the page filled edge to
+     edge; the preview iframe supplies its own rounding. */
+  /* An inset outline preserves Chrome's 20px content inset. */
   box-shadow: inset 0 0 0 1px var(--popup-border);
 }
 .popup [hidden] {
@@ -293,6 +298,12 @@ button:focus-visible {
   font-size: 12px;
   font-weight: 500;
   line-height: normal;
+}
+.search-match {
+  color: var(--match-text);
+  background: var(--match-background);
+  border-radius: 2px;
+  font: inherit;
 }
 .tab-meta {
   display: flex;

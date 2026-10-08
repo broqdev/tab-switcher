@@ -4,16 +4,37 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import {
-  filterTabs,
+  searchTabs,
   activateEntry,
   type TabEntry,
   type SearchMode,
 } from '../../lib/tabs';
+import { matchExcerpt, type MatchedText } from '../../lib/search-text';
 import { useTabs } from '../../lib/use-tabs';
-import { useShowClosed } from '../../lib/use-show-closed';
+import {
+  useSearchPreferences,
+  type SearchPreferences,
+} from '../../lib/use-search-preferences';
 import Settings from '../../components/settings/Settings';
+
+function HighlightedText({ text, ranges }: MatchedText) {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    parts.push(text.slice(cursor, start));
+    parts.push(
+      <mark className="search-match" key={`${start}-${end}`}>
+        {text.slice(start, end)}
+      </mark>,
+    );
+    cursor = end;
+  }
+  parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
 
 function SearchIcon() {
   // Chromium's tab-search:search-old icon; see THIRD_PARTY_NOTICES.
@@ -98,15 +119,15 @@ function accessAge(timestamp: number, now: number): string {
 export default function App() {
   const { tabs, currentTabId, loading, error, refresh } = useTabs();
   const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<SearchMode>('fuzzy');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const {
-    showClosed,
+    searchMode: mode,
+    showClosedTabs: showClosed,
     ready: preferenceReady,
     saving: preferenceSaving,
     error: preferenceError,
-    setShowClosed,
-  } = useShowClosed();
+    updatePreferences,
+  } = useSearchPreferences();
   const isLoading = loading || !preferenceReady;
   const [now, setNow] = useState(Date.now);
   const [selectedKey, setSelectedKey] = useState<string>();
@@ -115,18 +136,24 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const switchingRef = useRef(false);
-  const { tabs: visibleTabs, error: searchError } = useMemo(() => {
+  const {
+    tabs: visibleTabs,
+    results,
+    error: searchError,
+  } = useMemo(() => {
     try {
+      const results = searchTabs(preferenceReady ? tabs : [], query, {
+        mode,
+        showClosed,
+      });
       return {
-        tabs: filterTabs(preferenceReady ? tabs : [], query, {
-          mode,
-          showClosed,
-        }),
+        tabs: results.map(({ entry }) => entry),
+        results,
         error: undefined,
       };
     } catch (cause) {
       if (mode !== 'regex' || !(cause instanceof SyntaxError)) throw cause;
-      return { tabs: [], error: 'Invalid regular expression.' };
+      return { tabs: [], results: [], error: 'Invalid regular expression.' };
     }
   }, [tabs, query, mode, showClosed, preferenceReady]);
   const hasSearchQuery =
@@ -191,10 +218,14 @@ export default function App() {
     searchRef.current?.focus();
   }
 
-  function toggleMode(next: Exclude<SearchMode, 'fuzzy'>) {
+  function changePreferences(changes: Partial<SearchPreferences>) {
     setSettingsOpen(false);
-    setMode((current) => (current === next ? 'fuzzy' : next));
+    void updatePreferences(changes);
     setSelectedKey(undefined);
+  }
+
+  function toggleMode(next: Exclude<SearchMode, 'fuzzy'>) {
+    changePreferences({ searchMode: mode === next ? 'fuzzy' : next });
     searchRef.current?.focus();
   }
 
@@ -247,7 +278,13 @@ export default function App() {
         <input
           ref={searchRef}
           type="text"
-          placeholder={mode === 'regex' ? 'Search with regex' : 'Search Tabs'}
+          placeholder={
+            mode === 'regex'
+              ? 'Search with regex'
+              : mode === 'exact'
+                ? 'Search exact text'
+                : 'Search Tabs'
+          }
           value={query}
           onFocus={() => setSettingsOpen(false)}
           onChange={(event) => changeQuery(event.target.value)}
@@ -284,6 +321,7 @@ export default function App() {
           aria-label="Exact match"
           aria-pressed={mode === 'exact'}
           title="Match exact text (no fuzzy matching)"
+          disabled={!preferenceReady || preferenceSaving}
           onClick={() => toggleMode('exact')}
         >
           <span aria-hidden="true">ab</span>
@@ -294,6 +332,7 @@ export default function App() {
           aria-label="Use regular expression"
           aria-pressed={mode === 'regex'}
           title="Use regular expression"
+          disabled={!preferenceReady || preferenceSaving}
           onClick={() => toggleMode('regex')}
         >
           <span aria-hidden="true">.*</span>
@@ -306,11 +345,9 @@ export default function App() {
             type="checkbox"
             checked={showClosed}
             disabled={!preferenceReady || preferenceSaving}
-            onChange={(event) => {
-              setSettingsOpen(false);
-              void setShowClosed(event.target.checked);
-              setSelectedKey(undefined);
-            }}
+            onChange={(event) =>
+              changePreferences({ showClosedTabs: event.target.checked })
+            }
           />
           Show closed tabs
         </label>
@@ -392,7 +429,7 @@ export default function App() {
           aria-label={showClosed ? 'Open and closed tabs' : 'Open tabs'}
           ref={listRef}
         >
-          {visibleTabs.map((tab) => {
+          {results.map(({ entry: tab, title, url }) => {
             const isCurrent = tab.kind === 'open' && tab.id === currentTabId;
             const details =
               tab.kind === 'open'
@@ -426,9 +463,17 @@ export default function App() {
                 >
                   <TabIcon key={tab.url} url={tab.url} />
                   <span className="tab-info">
-                    <span className="tab-title">{tab.title}</span>
+                    <span className="tab-title">
+                      <HighlightedText {...matchExcerpt(title, 24)} />
+                    </span>
                     <span id={`meta-${tab.key}`} className="tab-meta">
-                      <span className="tab-domain">{tabDomain(tab.url)}</span>
+                      <span className="tab-domain">
+                        {url.ranges.length > 0 ? (
+                          <HighlightedText {...matchExcerpt(url, 16)} />
+                        ) : (
+                          tabDomain(tab.url)
+                        )}
+                      </span>
                       <span aria-hidden="true">•</span>
                       <span className="tab-age">
                         {accessAge(tab.lastAccessed, now)}
