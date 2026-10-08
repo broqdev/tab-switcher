@@ -1,0 +1,41 @@
+{
+  "name": "tab-switcher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A searchable, most-recent-first tab switcher for Chrome.",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "preview": "npm run build && node scripts/preview.mjs",
+    "zip": "wxt zip",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "check": "npm run typecheck && npm test && npm run build",
+    "icons": "node scripts/generate-icons.mjs",
+    "postinstall": "wxt prepare"
+  },
+  "dependencies": {
+    "fuse.js": "^7.5.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/chrome": "^0.3.4",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@wxt-dev/module-react": "^1.2.2",
+    "prettier": "^3.9.9",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3",
+    "wxt": "^0.21.4"
+  }
+}

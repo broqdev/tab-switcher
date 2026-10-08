@@ -1,0 +1,92 @@
+.preferences {
+  --label-width: 100px;
+  color: var(--primary-text);
+  font-size: 12px;
+}
+.preferences-section {
+  margin: 0;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--popup-border);
+}
+.preferences-section:first-child {
+  padding-top: 4px;
+}
+.preferences-section:last-child {
+  border-bottom: 0;
+}
+.preference-row {
+  display: grid;
+  grid-template-columns: var(--label-width) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.preference-row > :first-child {
+  text-align: right;
+  font-weight: 500;
+}
+.preferences input,
+.preferences button {
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--popup-border);
+  border-radius: 7px;
+  background: var(--icon-background);
+  color: inherit;
+  font: inherit;
+}
+.preferences input {
+  width: 160px;
+}
+.preferences input:disabled {
+  opacity: 0.6;
+}
+.preferences input[aria-invalid='true'] {
+  border-color: #d9927d;
+}
+.preferences input:focus-visible,
+.preferences button:focus-visible {
+  outline: 1px solid var(--secondary-text);
+  outline-offset: 2px;
+}
+.preferences button:hover {
+  background: var(--row-background);
+}
+.preferences .shortcut-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 160px;
+  border-radius: 14px;
+}
+.shortcut-control kbd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+}
+.shortcut-control svg {
+  flex-shrink: 0;
+  color: var(--secondary-text);
+}
+.preference-help,
+.preference-error {
+  margin: 8px 0 0 calc(var(--label-width) + 10px);
+  color: var(--secondary-text);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.preference-error {
+  color: #f5b7a9;
+}
+.preference-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 0 calc(var(--label-width) + 10px);
+}
+.preference-actions [role='status'] {
+  color: var(--scrollbar-thumb);
+  font-size: 11px;
+}
