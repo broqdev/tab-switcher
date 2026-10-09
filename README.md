@@ -1,4 +1,4 @@
-# <img src="public/icon/128.png" alt="Tab Switcher icon" width="32" height="32"> Tab Switcher
+# <img src="assets/icon/readme-icon.svg" alt="Tab Switcher icon" width="32" height="40" align="absmiddle"> Tab Switcher
 
 Find open and recently closed tabs across all Chrome windows. Click an open tab to switch to it, or a closed tab to reopen it.
 

@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
@@ -23,5 +23,15 @@ for (const size of sizes) {
     .png({ compressionLevel: 9 })
     .toFile(fileURLToPath(new URL(`${size}.png`, output)));
 }
+
+// GitHub strips CSS offsets. Extra space below the artwork raises its visible
+// center when the README aligns the image canvas to the heading's x-height.
+const readmeIcon = (await readFile(new URL('128.png', output))).toString(
+  'base64',
+);
+await writeFile(
+  new URL('../assets/icon/readme-icon.svg', import.meta.url),
+  `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40" viewBox="0 0 32 40">\n  <image width="32" height="32" href="data:image/png;base64,${readmeIcon}"/>\n</svg>\n`,
+);
 
 console.log(`Exported icon PNGs: ${sizes.join(', ')}px.`);
