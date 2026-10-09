@@ -2,18 +2,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getTabEntries, type TabEntry } from './tabs';
 import { HISTORY_KEY, SESSION_KEY } from './history';
 
-export function useTabs() {
+export function useTabs(includeClosed = true, enabled = true) {
   const [tabs, setTabs] = useState<TabEntry[]>([]);
   const [currentTabId, setCurrentTabId] = useState<number>();
   const [loading, setLoading] = useState(true);
+  const [loadedMode, setLoadedMode] = useState<boolean>();
   const [error, setError] = useState<string>();
   const mounted = useRef(false);
   const request = useRef(0);
 
   const refresh = useCallback(async () => {
+    if (!enabled) return;
     const version = ++request.current;
     try {
-      const snapshot = await getTabEntries();
+      const snapshot = await getTabEntries(includeClosed);
       if (!mounted.current || version !== request.current) return;
       setTabs(snapshot.tabs);
       setCurrentTabId(snapshot.currentTabId);
@@ -22,12 +24,17 @@ export function useTabs() {
       if (!mounted.current || version !== request.current) return;
       setError('Could not load your tab history. Try again.');
     } finally {
-      if (mounted.current && version === request.current) setLoading(false);
+      if (mounted.current && version === request.current) {
+        setLoadedMode(includeClosed);
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [includeClosed, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     mounted.current = true;
+    setLoading(true);
     const onChange = () => {
       void refresh();
     };
@@ -36,8 +43,9 @@ export function useTabs() {
       area: string,
     ) => {
       if (
-        (area === 'local' && HISTORY_KEY in changes) ||
-        (area === 'session' && SESSION_KEY in changes)
+        includeClosed &&
+        ((area === 'local' && HISTORY_KEY in changes) ||
+          (area === 'session' && SESSION_KEY in changes))
       )
         onChange();
     };
@@ -67,7 +75,13 @@ export function useTabs() {
       chrome.tabs.onReplaced.removeListener(onChange);
       chrome.windows.onFocusChanged.removeListener(onChange);
     };
-  }, [refresh]);
+  }, [refresh, includeClosed, enabled]);
 
-  return { tabs, currentTabId, loading, error, refresh };
+  return {
+    tabs,
+    currentTabId,
+    loading: loading || loadedMode !== includeClosed || !enabled,
+    error,
+    refresh,
+  };
 }

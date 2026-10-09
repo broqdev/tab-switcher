@@ -1,19 +1,21 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { activateEntry, type TabEntry, type SearchMode } from '../../lib/tabs';
 import {
-  searchTabs,
-  activateEntry,
-  type TabEntry,
-  type SearchMode,
-} from '../../lib/tabs';
-import { matchExcerpt, type MatchedText } from '../../lib/search-text';
+  decodeSearchUrl,
+  matchExcerpt,
+  type MatchedText,
+} from '../../lib/search-text';
 import { useTabs } from '../../lib/use-tabs';
+import { TAB_ROW_HEIGHT, useVirtualList } from '../../lib/use-virtual-list';
+import { useTabSearch } from '../../lib/use-tab-search';
 import {
   useSearchPreferences,
   type SearchPreferences,
@@ -117,7 +119,6 @@ function accessAge(timestamp: number, now: number): string {
 }
 
 export default function App() {
-  const { tabs, currentTabId, loading, error, refresh } = useTabs();
   const [query, setQuery] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const {
@@ -128,41 +129,101 @@ export default function App() {
     error: preferenceError,
     updatePreferences,
   } = useSearchPreferences();
+  const { tabs, currentTabId, loading, error, refresh } = useTabs(
+    showClosed,
+    preferenceReady,
+  );
   const isLoading = loading || !preferenceReady;
   const [now, setNow] = useState(Date.now);
-  const [selectedKey, setSelectedKey] = useState<string>();
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string>();
   const searchRef = useRef<HTMLInputElement>(null);
-  const listRef = useRef<HTMLUListElement>(null);
   const switchingRef = useRef(false);
   const {
-    tabs: visibleTabs,
-    results,
+    entries: visibleTabs,
+    highlights,
     error: searchError,
-  } = useMemo(() => {
-    try {
-      const results = searchTabs(preferenceReady ? tabs : [], query, {
-        mode,
-        showClosed,
-      });
-      return {
-        tabs: results.map(({ entry }) => entry),
-        results,
-        error: undefined,
-      };
-    } catch (cause) {
-      if (mode !== 'regex' || !(cause instanceof SyntaxError)) throw cause;
-      return { tabs: [], results: [], error: 'Invalid regular expression.' };
-    }
-  }, [tabs, query, mode, showClosed, preferenceReady]);
+    displayedError,
+    pending: searchPending,
+    committed,
+    loadHighlights,
+  } = useTabSearch(tabs, query, mode, showClosed, preferenceReady && !loading);
+  // Selection and scroll belong to the displayed results. Typing must not
+  // reset the retained list before its replacement is ready.
+  const resultKey = JSON.stringify([
+    committed?.query,
+    committed?.mode,
+    committed?.showClosed,
+  ]);
+  const [selection, setSelection] = useState<{
+    resultKey: string;
+    key?: string;
+  }>({ resultKey });
+  if (selection.resultKey !== resultKey) setSelection({ resultKey });
+  const selectedKey =
+    selection.resultKey === resultKey ? selection.key : undefined;
+  function setSelectedKey(key: string) {
+    setSelection({ resultKey, key });
+  }
+  const queuedKeys = useRef<{
+    query: string;
+    mode: SearchMode;
+    showClosed: boolean;
+    baseKey?: string;
+    direction: number;
+    activate: boolean;
+  }>(undefined);
   const hasSearchQuery =
     mode === 'regex' ? query.length > 0 : query.trim().length > 0;
+  const hasDisplayedQuery =
+    committed?.mode === 'regex'
+      ? committed.query.length > 0
+      : Boolean(committed?.query.trim().length);
   const selectedIndex = Math.max(
     0,
     visibleTabs.findIndex((tab) => tab.key === selectedKey),
   );
   const selectedTab = visibleTabs[selectedIndex];
+  const virtual = useVirtualList(
+    visibleTabs.length,
+    selectedIndex,
+    resultKey,
+    selectedTab?.key,
+  );
+  useEffect(() => {
+    if (!searchPending) loadHighlights(virtual.indices);
+  }, [loadHighlights, virtual.indices, searchPending]);
+  useLayoutEffect(() => {
+    const queued = queuedKeys.current;
+    if (isLoading || searchPending || !queued) return;
+    queuedKeys.current = undefined;
+    if (
+      queued.query !== query ||
+      queued.mode !== mode ||
+      queued.showClosed !== showClosed ||
+      searchError ||
+      !visibleTabs.length
+    )
+      return;
+    const base = Math.max(
+      0,
+      visibleTabs.findIndex((tab) => tab.key === queued.baseKey),
+    );
+    const index =
+      (((base + queued.direction) % visibleTabs.length) + visibleTabs.length) %
+      visibleTabs.length;
+    const tab = visibleTabs[index]!;
+    setSelectedKey(tab.key);
+    if (queued.activate) void activate(tab);
+  }, [
+    isLoading,
+    searchPending,
+    query,
+    mode,
+    showClosed,
+    searchError,
+    visibleTabs,
+  ]);
   const windows = useMemo(
     () =>
       [
@@ -178,16 +239,8 @@ export default function App() {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  useEffect(() => {
-    if (selectedTab) {
-      listRef.current
-        ?.querySelector<HTMLElement>(`[data-entry-key="${selectedTab.key}"]`)
-        ?.scrollIntoView({ block: 'nearest' });
-    }
-  }, [selectedTab?.key]);
-
   async function activate(tab: TabEntry) {
-    if (switchingRef.current) return;
+    if (switchingRef.current || searchPending || isLoading) return;
     switchingRef.current = true;
     setSwitching(true);
     setSwitchError(undefined);
@@ -208,9 +261,9 @@ export default function App() {
   }
 
   function changeQuery(value: string) {
+    queuedKeys.current = undefined;
     setSettingsOpen(false);
     setQuery(value);
-    setSelectedKey(undefined);
   }
 
   function closeSettings() {
@@ -219,9 +272,9 @@ export default function App() {
   }
 
   function changePreferences(changes: Partial<SearchPreferences>) {
+    queuedKeys.current = undefined;
     setSettingsOpen(false);
     void updatePreferences(changes);
-    setSelectedKey(undefined);
   }
 
   function toggleMode(next: Exclude<SearchMode, 'fuzzy'>) {
@@ -248,6 +301,28 @@ export default function App() {
       target instanceof HTMLElement && target.hasAttribute('data-entry-key');
     if (!isSearch && !isTab) return;
     if (
+      (searchPending || isLoading) &&
+      ['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)
+    ) {
+      event.preventDefault();
+      const queued = (queuedKeys.current ??= {
+        query,
+        mode,
+        showClosed,
+        baseKey:
+          committed?.query === query &&
+          committed.mode === mode &&
+          committed.showClosed === showClosed
+            ? selectedKey
+            : undefined,
+        direction: 0,
+        activate: false,
+      });
+      if (event.key === 'Enter') queued.activate = true;
+      else queued.direction += event.key === 'ArrowDown' ? 1 : -1;
+      return;
+    }
+    if (
       (event.key === 'ArrowDown' || event.key === 'ArrowUp') &&
       visibleTabs.length > 0
     ) {
@@ -267,7 +342,7 @@ export default function App() {
     <main
       className="popup"
       onKeyDown={handleKeyDown}
-      aria-busy={!settingsOpen && (isLoading || switching)}
+      aria-busy={!settingsOpen && (isLoading || searchPending || switching)}
     >
       <h1 className="sr-only">Tab Switcher</h1>
 
@@ -298,7 +373,9 @@ export default function App() {
             !settingsOpen && searchError ? 'search-error' : undefined
           }
           aria-activedescendant={
-            !settingsOpen && selectedTab ? `tab-${selectedTab.key}` : undefined
+            !settingsOpen && !isLoading && !searchPending && selectedTab
+              ? `tab-${selectedTab.key}`
+              : undefined
           }
           autoComplete="off"
           spellCheck={false}
@@ -387,7 +464,15 @@ export default function App() {
         </section>
       )}
 
-      <div className="search-results" hidden={settingsOpen}>
+      <div
+        className="search-results"
+        hidden={settingsOpen}
+        aria-busy={searchPending}
+        data-search-query={committed?.query ?? ''}
+        data-search-mode={committed?.mode ?? mode}
+        data-show-closed={committed?.showClosed ?? showClosed}
+        data-result-count={visibleTabs.length}
+      >
         {searchError && (
           <div id="search-error" className="search-error" role="alert">
             {searchError}
@@ -403,9 +488,11 @@ export default function App() {
         <div className="sr-only" role="status" aria-live="polite">
           {isLoading
             ? 'Loading tab history…'
-            : hasSearchQuery
-              ? `${visibleTabs.length} matching entries`
-              : `${visibleTabs.filter((tab) => tab.kind === 'open').length} open tabs${showClosed ? ` · ${visibleTabs.filter((tab) => tab.kind === 'closed').length} closed tabs` : ''}`}
+            : searchPending
+              ? 'Searching…'
+              : hasSearchQuery
+                ? `${visibleTabs.length} matching entries`
+                : `${visibleTabs.filter((tab) => tab.kind === 'open').length} open tabs${showClosed ? ` · ${visibleTabs.filter((tab) => tab.kind === 'closed').length} closed tabs` : ''}`}
         </div>
 
         {(error || switchError) && (
@@ -424,24 +511,44 @@ export default function App() {
 
         <ul
           id="tabs-list"
-          className="tab-list"
+          className="tab-list virtual-list"
           role="listbox"
           aria-label={showClosed ? 'Open and closed tabs' : 'Open tabs'}
-          ref={listRef}
+          ref={virtual.ref}
         >
-          {results.map(({ entry: tab, title, url }) => {
+          {visibleTabs.length > 0 && (
+            <li
+              role="presentation"
+              aria-hidden="true"
+              style={{ height: virtual.height }}
+            />
+          )}
+          {virtual.indices.map((index) => {
+            const tab = visibleTabs[index]!;
+            const { title, url } = highlights.get(tab.key) ?? {
+              title: { text: tab.title, ranges: [] },
+              url: { text: decodeSearchUrl(tab.url), ranges: [] },
+            };
             const isCurrent = tab.kind === 'open' && tab.id === currentTabId;
+            const isSelected = selectedTab?.key === tab.key;
             const details =
               tab.kind === 'open'
                 ? `Window ${windows.indexOf(tab.windowId) + 1}${tab.pinned ? ' · Pinned' : ''}`
                 : `Closed ${new Date(tab.closedAt).toLocaleString()} · Opens in a new tab`;
             return (
-              <li key={tab.key} role="none">
+              <li
+                key={tab.key}
+                role="none"
+                className="virtual-row"
+                style={{ top: index * TAB_ROW_HEIGHT }}
+              >
                 <button
                   id={`tab-${tab.key}`}
-                  className={`tab-row${tab.kind === 'closed' ? ' closed' : ''}${isCurrent ? ' current' : ''}${selectedTab?.key === tab.key ? ' selected' : ''}`}
+                  className={`tab-row${tab.kind === 'closed' ? ' closed' : ''}${isCurrent ? ' current' : ''}${isSelected ? ' selected' : ''}`}
                   role="option"
-                  aria-selected={selectedTab?.key === tab.key}
+                  aria-selected={!isLoading && !searchPending && isSelected}
+                  aria-posinset={index + 1}
+                  aria-setsize={visibleTabs.length}
                   aria-label={
                     tab.kind === 'closed'
                       ? `${tab.title}, closed tab`
@@ -456,9 +563,9 @@ export default function App() {
                   onClick={() => {
                     void activate(tab);
                   }}
-                  onFocus={() => setSelectedKey(tab.key)}
-                  onMouseEnter={() => setSelectedKey(tab.key)}
-                  disabled={switching}
+                  onFocus={() => !searchPending && setSelectedKey(tab.key)}
+                  onMouseEnter={() => !searchPending && setSelectedKey(tab.key)}
+                  disabled={switching || searchPending || isLoading}
                   title={`${tab.title}\n${tab.url}\n${details}${tab.lastAccessed > 0 ? ` · Last accessed ${new Date(tab.lastAccessed).toLocaleString()}` : ''}${tab.incognito ? ' · Incognito' : ''}`}
                 >
                   <TabIcon key={tab.url} url={tab.url} />
@@ -504,34 +611,38 @@ export default function App() {
           })}
         </ul>
 
-        {!isLoading && !error && !searchError && visibleTabs.length === 0 && (
-          <div className="empty-state">
-            <strong>
-              {hasSearchQuery
-                ? 'No matching tabs'
-                : showClosed
-                  ? 'No tab history yet'
-                  : 'No open tabs'}
-            </strong>
-            <p>
-              {hasSearchQuery
-                ? mode === 'regex'
-                  ? 'Try another pattern or turn off regex.'
-                  : 'Try a shorter title or part of a URL.'
-                : 'Open a tab to see it here.'}
-            </p>
-            {hasSearchQuery && (
-              <button
-                onClick={() => {
-                  changeQuery('');
-                  searchRef.current?.focus();
-                }}
-              >
-                Clear search
-              </button>
-            )}
-          </div>
-        )}
+        {!isLoading &&
+          committed &&
+          !error &&
+          !displayedError &&
+          visibleTabs.length === 0 && (
+            <div className="empty-state">
+              <strong>
+                {hasDisplayedQuery
+                  ? 'No matching tabs'
+                  : showClosed
+                    ? 'No tab history yet'
+                    : 'No open tabs'}
+              </strong>
+              <p>
+                {hasDisplayedQuery
+                  ? committed.mode === 'regex'
+                    ? 'Try another pattern or turn off regex.'
+                    : 'Try a shorter title or part of a URL.'
+                  : 'Open a tab to see it here.'}
+              </p>
+              {hasDisplayedQuery && (
+                <button
+                  onClick={() => {
+                    changeQuery('');
+                    searchRef.current?.focus();
+                  }}
+                >
+                  Clear search
+                </button>
+              )}
+            </div>
+          )}
       </div>
     </main>
   );

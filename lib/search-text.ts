@@ -61,13 +61,15 @@ export function matchedText(
   ranges: MatchRange[],
   normalized: boolean,
 ): MatchedText {
-  if (!normalized || ranges.length === 0)
+  if (!normalized || ranges.length === 0 || /^[\x00-\x7F]*$/u.test(text))
     return { text, ranges: mergeRanges(ranges) };
   // A normalized character can expand (ﬃ → ffi), shrink (é → e), or be
   // represented by several original code units. Keep whole graphemes colored.
   const starts: number[] = [];
   const ends: number[] = [];
+  const lastEnd = ranges.reduce((end, range) => Math.max(end, range[1]), 0);
   for (const segment of graphemes.segment(text)) {
+    if (starts.length >= lastEnd) break;
     const length = normalizeSearchText(segment.segment).length;
     for (let index = 0; index < length; index++) {
       starts.push(segment.index);

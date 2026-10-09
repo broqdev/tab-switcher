@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   filterTabs,
+  createTabSearcher,
+  getTabEntries,
   getOpenTabs,
   normalizeTabs,
   sortByRecent,
@@ -25,6 +27,66 @@ const makeTab = (overrides: Partial<OpenTab> = {}): OpenTab => ({
 afterEach(() => vi.unstubAllGlobals());
 
 describe('tab ordering and fuzzy search', () => {
+  it('reuses one prepared snapshot across queries, modes, and history visibility', () => {
+    const entries = [
+      Object.freeze(
+        makeTab({
+          title: 'Café TypeScript Handbook',
+          url: 'https://docs.example/caf%C3%A9',
+        }),
+      ),
+      Object.freeze(
+        makeTab({
+          id: 2,
+          title: 'Reference',
+          url: 'https://x.com/home',
+          lastAccessed: 200,
+        }),
+      ),
+      Object.freeze({
+        kind: 'closed' as const,
+        key: 'closed-prepared',
+        title: 'TypeScript notes',
+        url: 'https://example.com/notes',
+        lastAccessed: 300,
+        closedAt: 400,
+        incognito: false,
+      }),
+    ];
+    const search = createTabSearcher(entries);
+    for (let repetition = 0; repetition < 2; repetition++) {
+      expect(search('typescrpt').map(({ entry }) => entry.key)).toEqual([
+        'closed-prepared',
+        'open-1',
+      ]);
+      expect(
+        search('typescrpt', { showClosed: false }).map(
+          ({ entry }) => entry.key,
+        ),
+      ).toEqual(['open-1']);
+      expect(
+        search('type', { mode: 'exact' }).map(({ entry }) => entry.key),
+      ).toEqual(['closed-prepared', 'open-1']);
+      const [cafe] = search('cafe', { mode: 'exact' });
+      expect(cafe!.title.text.slice(...cafe!.title.ranges[0]!)).toBe('Café');
+      expect(
+        search('^Café', { mode: 'regex' }).map(({ entry }) => entry.key),
+      ).toEqual(['open-1']);
+      expect(search('x.com').map(({ entry }) => entry.key)).toEqual(['open-2']);
+      expect(search('').map(({ entry }) => entry.key)).toEqual([
+        'closed-prepared',
+        'open-2',
+        'open-1',
+      ]);
+      expect(() => search('[', { mode: 'regex' })).toThrow(SyntaxError);
+    }
+    const updated = createTabSearcher([
+      makeTab({ title: 'Updated guide', url: 'https://example.org/updated' }),
+    ]);
+    expect(updated('typescrpt')).toEqual([]);
+    expect(updated('updated')[0]!.entry.title).toBe('Updated guide');
+    expect(search('typescrpt')).toHaveLength(2);
+  });
   const tabs = [
     makeTab(),
     makeTab({
@@ -553,6 +615,50 @@ describe('tab ordering and fuzzy search', () => {
 });
 
 describe('Chrome integration', () => {
+  it('does not access closed storage when history is hidden', async () => {
+    const get = vi
+      .fn()
+      .mockRejectedValue(new Error('Storage should not be read'));
+    vi.stubGlobal('chrome', {
+      tabs: {
+        query: vi.fn().mockResolvedValue([{ ...makeTab(), active: true }]),
+      },
+      windows: { getLastFocused: vi.fn().mockResolvedValue({ id: 10 }) },
+      storage: { local: { get }, session: { get } },
+    });
+    const snapshot = await getTabEntries(false);
+    expect(snapshot.tabs.map((tab) => tab.key)).toEqual(['open-1']);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('reads current history when it is included and propagates storage failures', async () => {
+    const closed = {
+      kind: 'closed',
+      key: 'closed-current',
+      title: 'Saved',
+      url: 'https://example.com/saved',
+      lastAccessed: 300,
+      closedAt: 400,
+      incognito: false,
+    };
+    const get = vi.fn().mockResolvedValue({ closedTabHistory: [closed] });
+    vi.stubGlobal('chrome', {
+      tabs: {
+        query: vi.fn().mockResolvedValue([{ ...makeTab(), active: true }]),
+      },
+      windows: { getLastFocused: vi.fn().mockResolvedValue({ id: 10 }) },
+      storage: {
+        local: { get },
+        session: { get: vi.fn().mockResolvedValue({}) },
+      },
+    });
+    expect((await getTabEntries()).tabs.map((tab) => tab.key)).toEqual([
+      'closed-current',
+      'open-1',
+    ]);
+    get.mockRejectedValue(new Error('Storage unavailable'));
+    await expect(getTabEntries()).rejects.toThrow('Storage unavailable');
+  });
   it('queries all windows and identifies only the active tab in the last focused window as current', async () => {
     const query = vi.fn().mockResolvedValue([
       { ...makeTab(), active: true },

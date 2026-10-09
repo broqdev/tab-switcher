@@ -1,6 +1,6 @@
 {
   "name": "tab-switcher",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "A searchable, most-recent-first tab switcher for Chrome.",
@@ -17,6 +17,9 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:e2e": "npm run build && playwright test",
+    "perf:search": "vitest bench --run tests/performance/search.bench.ts",
+    "perf:ui": "npm run build && node --experimental-strip-types scripts/profile-search.mjs",
+    "perf:typing": "npm run build && node --experimental-strip-types scripts/profile-typing.mjs",
     "check": "npm run typecheck && npm test && npm run build",
     "icons": "node scripts/generate-icons.mjs",
     "postinstall": "wxt prepare"

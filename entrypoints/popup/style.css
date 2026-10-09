@@ -232,6 +232,13 @@ button:disabled {
 .tab-list:empty {
   flex: 0;
 }
+.virtual-list {
+  position: relative;
+}
+.virtual-row {
+  position: absolute;
+  inset-inline: 0;
+}
 .tab-list::-webkit-scrollbar,
 .settings-panel::-webkit-scrollbar {
   width: 4px;
@@ -258,6 +265,11 @@ button:disabled {
 .tab-row.selected,
 .tab-row:hover {
   background: var(--row-background);
+}
+.tab-row:disabled {
+  /* Block stale activation without dimming the list on every keystroke. */
+  opacity: 1;
+  cursor: default;
 }
 button:focus-visible {
   outline: 1px solid var(--secondary-text);

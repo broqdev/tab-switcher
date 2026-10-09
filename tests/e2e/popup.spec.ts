@@ -1809,9 +1809,13 @@ test('a saved custom history limit survives a browser restart and retains more t
     context = undefined;
     context = await launchExtension(profile);
     const reopened = await openPopup(context);
-    await expect(reopened.locator('[data-entry-kind="closed"]')).toHaveCount(
-      600,
+    await expect(reopened.locator('[role="status"]')).toContainText(
+      '600 closed tabs',
     );
+    await expect(
+      reopened.locator('[data-entry-kind="closed"]'),
+    ).not.toHaveCount(0);
+    expect(await reopened.getByRole('option').count()).toBeLessThanOrEqual(50);
     await openSettings(reopened);
     await expect(
       reopened.getByRole('spinbutton', {
