@@ -92,6 +92,59 @@ async function setup(showClosed = true) {
   return { context, worker, page };
 }
 
+test('pending search keeps the close affordance stable and cannot close a stale result', async () => {
+  const { context, worker, page } = await setup(false);
+  try {
+    const target = await worker.evaluate(
+      async () =>
+        (
+          await chrome.tabs.create({
+            url: 'about:blank#close-target',
+            active: false,
+          })
+        ).id!,
+    );
+    await delayWorkerResponses(page);
+    const row = page.locator(`[data-tab-id="${target}"]`);
+    const close = page
+      .locator('.virtual-row')
+      .filter({ has: row })
+      .getByRole('button', { name: /^Close /u });
+    await close.focus();
+    await expect(close).toHaveCSS('opacity', '1');
+    const search = page.getByRole('combobox');
+    await search.focus();
+    await page.evaluate(() => {
+      (window as unknown as { workerTest: WorkerTest }).workerTest.blocked =
+        true;
+    });
+    await search.fill('close-target');
+    await expect(page.locator('.popup')).toHaveAttribute('aria-busy', 'true');
+    await expect(close).toBeDisabled();
+    await expect(close).toHaveCSS('opacity', '1');
+    await close.evaluate((element: HTMLButtonElement) => element.click());
+    expect(
+      await worker.evaluate(
+        async (id) => (await chrome.tabs.get(id)).id,
+        target,
+      ),
+    ).toBe(target);
+    await page.evaluate(() => {
+      const state = (window as unknown as { workerTest: WorkerTest })
+        .workerTest;
+      state.blocked = false;
+      state.held.splice(0).forEach((deliver) => deliver());
+    });
+    await expect(page.locator('.popup')).toHaveAttribute('aria-busy', 'false');
+    await close.click();
+    await expect(row).toHaveCount(0);
+    await expect(search).toHaveValue('close-target');
+    await expect(search).toBeFocused();
+  } finally {
+    await context.close();
+  }
+});
+
 test('retained results stay visually stable through typing and stale worker replies', async ({}, testInfo) => {
   const { context, worker, page } = await setup();
   try {
@@ -443,8 +496,8 @@ test('hidden history skips reads, ignores a stale enabled read, and loads latest
   }
 });
 
-for (const navigation of [false, true])
-  test(`overlapping responses keep the latest query and queued ${navigation ? 'ArrowUp/Enter' : 'Enter'} uses its result`, async () => {
+for (const shortcut of ['Enter', 'ArrowUp/Enter', 'Option+2'])
+  test(`overlapping responses keep the latest query and queued ${shortcut} uses its result`, async () => {
     const { context, worker, page } = await setup();
     try {
       await seedArchives(worker);
@@ -465,14 +518,14 @@ for (const navigation of [false, true])
         )
         .toBe(1);
       await search.fill('Archive 2');
-      const query = navigation ? 'Archive' : 'Archive 3';
+      const query = shortcut === 'Enter' ? 'Archive 3' : 'Archive';
       await search.fill(query);
       await expect(search).toHaveValue(query);
       await expect(page.locator('.popup')).toHaveAttribute('aria-busy', 'true');
       await expect(page.getByRole('option').first()).toBeDisabled();
       const opened = context.waitForEvent('page');
-      if (navigation) await search.press('ArrowUp');
-      await search.press('Enter');
+      if (shortcut === 'ArrowUp/Enter') await search.press('ArrowUp');
+      await search.press(shortcut === 'Option+2' ? 'Alt+2' : 'Enter');
       await page.evaluate(() =>
         (
           window as unknown as { workerTest: WorkerTest }
@@ -497,12 +550,81 @@ for (const navigation of [false, true])
         ).workerTest.held.shift()!(),
       );
       await expect(await opened).toHaveURL(
-        navigation ? 'about:blank#archive-4' : 'about:blank#archive-3',
+        shortcut === 'ArrowUp/Enter'
+          ? 'about:blank#archive-4'
+          : shortcut === 'Option+2'
+            ? 'about:blank#archive-1'
+            : 'about:blank#archive-3',
       );
     } finally {
       await context.close();
     }
   });
+
+for (const scenario of ['missing', 'typing', 'settings']) {
+  test(`queued result shortcut handles ${scenario === 'missing' ? 'a missing result without wrapping' : `cancellation by ${scenario}`}`, async () => {
+    const { context, worker, page } = await setup();
+    try {
+      await seedArchives(worker);
+      await delayWorkerResponses(page);
+      const search = page.getByRole('combobox');
+      await search.fill('Archive');
+      await expect(page.locator('.popup')).toHaveAttribute(
+        'aria-busy',
+        'false',
+      );
+      await page.evaluate(() => {
+        (window as unknown as { workerTest: WorkerTest }).workerTest.blocked =
+          true;
+      });
+      await search.fill('Archive 1');
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as { workerTest: WorkerTest }).workerTest.held
+                .length,
+          ),
+        )
+        .toBe(1);
+      await search.press(scenario === 'missing' ? 'Alt+9' : 'Alt+1');
+      if (scenario === 'typing') await search.fill('Archive 2');
+      if (scenario === 'settings')
+        await page
+          .getByRole('button', { name: 'Settings', exact: true })
+          .click();
+      await page.evaluate(() => {
+        const state = (window as unknown as { workerTest: WorkerTest })
+          .workerTest;
+        state.blocked = false;
+        state.held.splice(0).forEach((deliver) => deliver());
+      });
+      await expect(page.locator('.search-results')).toHaveAttribute(
+        'aria-busy',
+        'false',
+      );
+      if (scenario === 'settings')
+        await expect(
+          page.getByRole('region', { name: 'Settings', exact: true }),
+        ).toBeVisible();
+      const results = page.getByRole('option', { includeHidden: true });
+      await expect(results).toHaveCount(1);
+      await expect(results).toContainText(
+        scenario === 'typing' ? 'Archive 2' : 'Archive 1',
+      );
+      expect(
+        await worker.evaluate(
+          async () =>
+            (await chrome.tabs.query({})).filter((tab) =>
+              tab.url?.startsWith('about:blank#archive-'),
+            ).length,
+        ),
+      ).toBe(0);
+    } finally {
+      await context.close();
+    }
+  });
+}
 
 test('mode/history changes supersede pending results and a failed worker recovers on a new query', async () => {
   const { context, worker, page } = await setup();

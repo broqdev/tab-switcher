@@ -263,13 +263,48 @@ button:disabled {
   text-align: left;
 }
 .tab-row.selected,
-.tab-row:hover {
+.virtual-row:hover .tab-row,
+.virtual-row:focus-within .tab-row {
   background: var(--row-background);
 }
 .tab-row:disabled {
   /* Block stale activation without dimming the list on every keystroke. */
   opacity: 1;
   cursor: default;
+}
+.tab-row.open {
+  padding-inline-end: 60px;
+}
+.tab-close {
+  position: absolute;
+  inset-inline-end: 16px;
+  top: 10px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--secondary-text);
+  pointer-events: none;
+}
+.tab-close,
+.tab-close:disabled {
+  opacity: 0;
+}
+.tab-close:disabled {
+  cursor: default;
+}
+.virtual-row:hover .tab-close,
+.virtual-row:focus-within .tab-close,
+.tab-row.selected + .tab-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tab-close:hover {
+  background: color-mix(in srgb, var(--primary-text) 10%, transparent);
 }
 button:focus-visible {
   outline: 1px solid var(--secondary-text);

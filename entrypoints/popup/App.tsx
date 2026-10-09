@@ -7,7 +7,12 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { activateEntry, type TabEntry, type SearchMode } from '../../lib/tabs';
+import {
+  activateEntry,
+  type OpenTab,
+  type TabEntry,
+  type SearchMode,
+} from '../../lib/tabs';
 import {
   decodeSearchUrl,
   matchExcerpt,
@@ -21,6 +26,10 @@ import {
   type SearchPreferences,
 } from '../../lib/use-search-preferences';
 import Settings from '../../components/settings/Settings';
+
+const resultShortcut = navigator.platform.startsWith('Mac')
+  ? '⌥1–9'
+  : 'Alt+1–9';
 
 function HighlightedText({ text, ranges }: MatchedText) {
   const parts: ReactNode[] = [];
@@ -137,8 +146,11 @@ export default function App() {
   const [now, setNow] = useState(Date.now);
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState<string>();
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState<OpenTab>();
   const searchRef = useRef<HTMLInputElement>(null);
   const switchingRef = useRef(false);
+  const closingRef = useRef(false);
   const {
     entries: visibleTabs,
     highlights,
@@ -170,6 +182,7 @@ export default function App() {
     mode: SearchMode;
     showClosed: boolean;
     baseKey?: string;
+    resultIndex?: number;
     direction: number;
     activate: boolean;
   }>(undefined);
@@ -195,7 +208,7 @@ export default function App() {
   }, [loadHighlights, virtual.indices, searchPending]);
   useLayoutEffect(() => {
     const queued = queuedKeys.current;
-    if (isLoading || searchPending || !queued) return;
+    if (isLoading || searchPending || closing || !queued) return;
     queuedKeys.current = undefined;
     if (
       queued.query !== query ||
@@ -210,14 +223,17 @@ export default function App() {
       visibleTabs.findIndex((tab) => tab.key === queued.baseKey),
     );
     const index =
+      queued.resultIndex ??
       (((base + queued.direction) % visibleTabs.length) + visibleTabs.length) %
-      visibleTabs.length;
-    const tab = visibleTabs[index]!;
+        visibleTabs.length;
+    const tab = visibleTabs[index];
+    if (!tab) return;
     setSelectedKey(tab.key);
     if (queued.activate) void activate(tab);
   }, [
     isLoading,
     searchPending,
+    closing,
     query,
     mode,
     showClosed,
@@ -240,10 +256,17 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
   async function activate(tab: TabEntry) {
-    if (switchingRef.current || searchPending || isLoading) return;
+    if (
+      switchingRef.current ||
+      closingRef.current ||
+      searchPending ||
+      isLoading
+    )
+      return;
     switchingRef.current = true;
     setSwitching(true);
     setSwitchError(undefined);
+    setCloseError(undefined);
     try {
       await activateEntry(tab);
       window.close();
@@ -257,6 +280,35 @@ export default function App() {
     } finally {
       switchingRef.current = false;
       setSwitching(false);
+    }
+  }
+
+  async function closeTab(tab: OpenTab) {
+    if (
+      closingRef.current ||
+      switchingRef.current ||
+      searchPending ||
+      isLoading
+    )
+      return;
+    closingRef.current = true;
+    setClosing(true);
+    setCloseError(undefined);
+    setSwitchError(undefined);
+    queuedKeys.current = undefined;
+    // Keep navigation at the close position rather than jumping to the top.
+    const index = visibleTabs.findIndex((entry) => entry.key === tab.key);
+    const next = visibleTabs[index + 1] ?? visibleTabs[index - 1];
+    if (next) setSelectedKey(next.key);
+    searchRef.current?.focus();
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch {
+      setCloseError(tab);
+    } finally {
+      await refresh();
+      closingRef.current = false;
+      setClosing(false);
     }
   }
 
@@ -295,11 +347,49 @@ export default function App() {
       return;
     }
     if (settingsOpen) return;
+    if (
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      /^Digit[1-9]$/u.test(event.code)
+    ) {
+      // Option produces symbols on macOS; use the physical number key and
+      // prevent that symbol from being inserted into the search field.
+      event.preventDefault();
+      if (event.repeat || switchingRef.current || closingRef.current) return;
+      queuedKeys.current = undefined;
+      const resultIndex = Number(event.code.slice(-1)) - 1;
+      if (searchPending || isLoading) {
+        queuedKeys.current = {
+          query,
+          mode,
+          showClosed,
+          resultIndex,
+          direction: 0,
+          activate: true,
+        };
+      } else {
+        const tab = visibleTabs[resultIndex];
+        if (tab) {
+          setSelectedKey(tab.key);
+          void activate(tab);
+        }
+      }
+      return;
+    }
     const target = event.target;
     const isSearch = target === searchRef.current;
     const isTab =
       target instanceof HTMLElement && target.hasAttribute('data-entry-key');
     if (!isSearch && !isTab) return;
+    if (
+      closingRef.current &&
+      ['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)
+    ) {
+      event.preventDefault();
+      return;
+    }
     if (
       (searchPending || isLoading) &&
       ['ArrowDown', 'ArrowUp', 'Enter'].includes(event.key)
@@ -342,7 +432,9 @@ export default function App() {
     <main
       className="popup"
       onKeyDown={handleKeyDown}
-      aria-busy={!settingsOpen && (isLoading || searchPending || switching)}
+      aria-busy={
+        !settingsOpen && (isLoading || searchPending || switching || closing)
+      }
     >
       <h1 className="sr-only">Tab Switcher</h1>
 
@@ -353,13 +445,13 @@ export default function App() {
         <input
           ref={searchRef}
           type="text"
-          placeholder={
+          placeholder={`${
             mode === 'regex'
               ? 'Search with regex'
               : mode === 'exact'
                 ? 'Search exact text'
                 : 'Search Tabs'
-          }
+          } (${resultShortcut} to select)`}
           value={query}
           onFocus={() => setSettingsOpen(false)}
           onChange={(event) => changeQuery(event.target.value)}
@@ -370,7 +462,9 @@ export default function App() {
           aria-controls="tabs-list"
           aria-invalid={Boolean(searchError)}
           aria-describedby={
-            !settingsOpen && searchError ? 'search-error' : undefined
+            !settingsOpen && searchError
+              ? 'result-shortcut-hint search-error'
+              : 'result-shortcut-hint'
           }
           aria-activedescendant={
             !settingsOpen && !isLoading && !searchPending && selectedTab
@@ -380,6 +474,11 @@ export default function App() {
           autoComplete="off"
           spellCheck={false}
         />
+        <span id="result-shortcut-hint" className="sr-only">
+          Press {navigator.platform.startsWith('Mac') ? 'Option' : 'Alt'} and a
+          number from 1 to 9 to activate that search result. Open tabs are
+          switched to; closed tabs reopen in a new tab.
+        </span>
         {query && (
           <button
             className="clear-search"
@@ -435,9 +534,13 @@ export default function App() {
             type="button"
             aria-pressed={settingsOpen}
             aria-controls="settings-panel"
-            onClick={() =>
-              settingsOpen ? closeSettings() : setSettingsOpen(true)
-            }
+            onClick={() => {
+              if (settingsOpen) closeSettings();
+              else {
+                queuedKeys.current = undefined;
+                setSettingsOpen(true);
+              }
+            }}
           >
             Settings
           </button>
@@ -495,14 +598,22 @@ export default function App() {
                 : `${visibleTabs.filter((tab) => tab.kind === 'open').length} open tabs${showClosed ? ` · ${visibleTabs.filter((tab) => tab.kind === 'closed').length} closed tabs` : ''}`}
         </div>
 
-        {(error || switchError) && (
+        {(error || switchError || closeError) && (
           <div className="error-message" role="alert">
-            <span>{switchError || error}</span>
+            <span>
+              {closeError
+                ? 'Could not close that tab. Try again.'
+                : switchError || error}
+            </span>
             <button
               onClick={() => {
-                setSwitchError(undefined);
-                void refresh();
+                if (closeError) void closeTab(closeError);
+                else {
+                  setSwitchError(undefined);
+                  void refresh();
+                }
               }}
+              disabled={closing || switching || searchPending || isLoading}
             >
               Retry
             </button>
@@ -544,7 +655,7 @@ export default function App() {
               >
                 <button
                   id={`tab-${tab.key}`}
-                  className={`tab-row${tab.kind === 'closed' ? ' closed' : ''}${isCurrent ? ' current' : ''}${isSelected ? ' selected' : ''}`}
+                  className={`tab-row ${tab.kind}${isCurrent ? ' current' : ''}${isSelected ? ' selected' : ''}`}
                   role="option"
                   aria-selected={!isLoading && !searchPending && isSelected}
                   aria-posinset={index + 1}
@@ -565,7 +676,7 @@ export default function App() {
                   }}
                   onFocus={() => !searchPending && setSelectedKey(tab.key)}
                   onMouseEnter={() => !searchPending && setSelectedKey(tab.key)}
-                  disabled={switching || searchPending || isLoading}
+                  disabled={switching || closing || searchPending || isLoading}
                   title={`${tab.title}\n${tab.url}\n${details}${tab.lastAccessed > 0 ? ` · Last accessed ${new Date(tab.lastAccessed).toLocaleString()}` : ''}${tab.incognito ? ' · Incognito' : ''}`}
                 >
                   <TabIcon key={tab.url} url={tab.url} />
@@ -606,6 +717,34 @@ export default function App() {
                     </svg>
                   )}
                 </button>
+                {tab.kind === 'open' && (
+                  <button
+                    type="button"
+                    className="tab-close"
+                    aria-label={`Close ${tab.title}`}
+                    title="Close tab"
+                    disabled={
+                      closing || switching || searchPending || isLoading
+                    }
+                    onFocus={() => !searchPending && setSelectedKey(tab.key)}
+                    onClick={() => void closeTab(tab)}
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="m4 4 8 8M12 4l-8 8"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  </button>
+                )}
               </li>
             );
           })}

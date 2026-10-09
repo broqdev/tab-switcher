@@ -209,6 +209,32 @@
         activate(tab);
         return structuredClone(tab);
       },
+      remove: async (id) => {
+        const index = tabs.findIndex((tab) => tab.id === id);
+        if (index < 0) throw new Error('Unknown preview tab');
+        const [tab] = tabs.splice(index, 1);
+        closed.unshift({
+          kind: 'closed',
+          key: `closed-preview-${id}-${Date.now()}`,
+          title: tab.title,
+          url: tab.url,
+          lastAccessed: tab.lastAccessed,
+          closedAt: Date.now(),
+          incognito: tab.incognito,
+        });
+        tabEvents.onRemoved.emit(id, {
+          windowId: tab.windowId,
+          isWindowClosing: false,
+        });
+        storageEvent.emit(
+          { closedTabHistory: { newValue: structuredClone(closed) } },
+          'local',
+        );
+        if (tab.active) {
+          const next = tabs.find((item) => item.windowId === tab.windowId);
+          if (next) activate(next);
+        }
+      },
       create: async ({ url, windowId }) => {
         if (url === 'chrome://extensions/shortcuts') {
           window.alert(
