@@ -1,5 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import ShortcutSettings from './ShortcutSettings';
+import ClosedTabsShortcutSettings, {
+  type ClosedTabsShortcutSettingsProps,
+} from './ClosedTabsShortcutSettings';
 import './style.css';
 import {
   HISTORY_LIMIT,
@@ -9,7 +12,9 @@ import {
   readHistoryLimit,
 } from '../../lib/history';
 
-export default function Settings() {
+export default function Settings(
+  shortcutProps: ClosedTabsShortcutSettingsProps,
+) {
   const [value, setValue] = useState(String(HISTORY_LIMIT));
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -76,6 +81,7 @@ export default function Settings() {
   return (
     <div className="preferences">
       <ShortcutSettings />
+      <ClosedTabsShortcutSettings {...shortcutProps} />
       <form
         className="preferences-section"
         onSubmit={(event) => void save(event)}

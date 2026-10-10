@@ -1836,7 +1836,9 @@ test('shortcut settings open Chrome editing, refresh the actual binding, and sur
     context = await launchExtension(profile);
     const settings = await openPopup(context);
     await openSettings(settings);
-    await expect(settings.locator('kbd')).toHaveText('Not set');
+    await expect(
+      settings.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+    ).toHaveText('Not set');
     const limit = settings.getByRole('spinbutton', {
       name: 'Closed-tab history limit',
       exact: true,
@@ -1870,14 +1872,18 @@ test('shortcut settings open Chrome editing, refresh the actual binding, and sur
     await settings.bringToFront();
     // Headless Chromium does not emit window focus when activating this tab.
     await settings.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await expect(settings.locator('kbd')).toHaveText(binding);
+    await expect(
+      settings.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+    ).toHaveText(binding);
     await expect(limit).toHaveValue('321');
     await context.close();
     context = undefined;
     context = await launchExtension(profile);
     const reopened = await openPopup(context);
     await openSettings(reopened);
-    await expect(reopened.locator('kbd')).toHaveText(binding);
+    await expect(
+      reopened.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+    ).toHaveText(binding);
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });
@@ -1898,7 +1904,9 @@ test('shortcut settings report read and open failures and allow retry', async ({
   });
   await popup.reload();
   await openSettings(popup);
-  await expect(popup.locator('kbd')).toHaveText('Unavailable');
+  await expect(
+    popup.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+  ).toHaveText('Unavailable');
   await expect(popup.getByRole('alert')).toContainText(
     'Could not read the shortcut',
   );
@@ -1919,7 +1927,9 @@ test('shortcut settings report read and open failures and allow retry', async ({
     ).failShortcutRead = false;
   });
   await popup.getByRole('button', { name: 'Retry', exact: true }).click();
-  await expect(popup.locator('kbd')).toHaveText('Not set');
+  await expect(
+    popup.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+  ).toHaveText('Not set');
   await expect(
     popup.getByRole('alert').filter({ hasText: 'Could not read' }),
   ).toHaveCount(0);
@@ -1959,13 +1969,17 @@ test('shortcut settings recover when updated files are loaded under the previous
     const settings = await openPopup(context);
     const popupUrl = settings.url();
     await openSettings(settings);
-    await expect(settings.locator('kbd')).toHaveText('Reload required');
+    await expect(
+      settings.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+    ).toHaveText('Reload required');
     await expect(settings.getByRole('alert')).toContainText(
       'Refreshing this page alone won’t update the extension',
     );
     await settings.reload();
     await openSettings(settings);
-    await expect(settings.locator('kbd')).toHaveText('Reload required');
+    await expect(
+      settings.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+    ).toHaveText('Reload required');
     await settings.getByRole('button', { name: 'Reload extension' }).click();
     const reopened = await context.newPage();
     await reopened.goto('chrome://extensions');
@@ -1974,7 +1988,9 @@ test('shortcut settings recover when updated files are loaded under the previous
     ).toBeVisible();
     await reopened.goto(popupUrl);
     await openSettings(reopened);
-    await expect(reopened.locator('kbd')).toHaveText('Not set');
+    await expect(
+      reopened.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+    ).toHaveText('Not set');
     await expect(reopened.getByRole('alert')).toHaveCount(0);
     await expect(
       reopened.getByRole('button', { name: 'Change shortcut' }),
@@ -2012,13 +2028,17 @@ test('shortcut settings ignore a stale read after a newer refresh', async ({
   });
   await popup.reload();
   await openSettings(popup);
-  await expect(popup.locator('kbd')).toHaveText('Loading…');
+  await expect(
+    popup.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+  ).toHaveText('Loading…');
   await popup.evaluate(() => {
     (window as typeof window & { delayShortcut?: boolean }).delayShortcut =
       false;
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await expect(popup.locator('kbd')).toHaveText('New shortcut');
+  await expect(
+    popup.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+  ).toHaveText('New shortcut');
   await popup.evaluate(async () => {
     (window as typeof window & { releaseShortcut?: () => void })
       .releaseShortcut!();
@@ -2026,7 +2046,9 @@ test('shortcut settings ignore a stale read after a newer refresh', async ({
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
   });
-  await expect(popup.locator('kbd')).toHaveText('New shortcut');
+  await expect(
+    popup.getByRole('region', { name: 'Popup shortcut' }).locator('kbd'),
+  ).toHaveText('New shortcut');
 });
 
 test('popup layout stays within Chrome popup bounds with many tabs', async ({

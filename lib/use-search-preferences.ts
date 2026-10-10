@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { SearchMode } from './tabs';
+import {
+  DEFAULT_CLOSED_TABS_SHORTCUT,
+  readPopupShortcut,
+  type PopupShortcut,
+} from './popup-shortcut';
 
 export interface SearchPreferences {
   searchMode: SearchMode;
   showClosedTabs: boolean;
+  closedTabsShortcut: PopupShortcut;
 }
 
-const KEYS = ['searchMode', 'showClosedTabs'] as const;
+const KEYS = ['searchMode', 'showClosedTabs', 'closedTabsShortcut'] as const;
 const DEFAULTS: SearchPreferences = {
   searchMode: 'fuzzy',
   showClosedTabs: true,
+  closedTabsShortcut: DEFAULT_CLOSED_TABS_SHORTCUT,
 };
 
 function normalize(
@@ -24,6 +31,8 @@ function normalize(
   if ('showClosedTabs' in values)
     next.showClosedTabs =
       typeof values.showClosedTabs === 'boolean' ? values.showClosedTabs : true;
+  if ('closedTabsShortcut' in values)
+    next.closedTabsShortcut = readPopupShortcut(values.closedTabsShortcut);
   return next;
 }
 
@@ -33,7 +42,11 @@ export function useSearchPreferences() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const saved = useRef(DEFAULTS);
-  const revisions = useRef({ searchMode: 0, showClosedTabs: 0 });
+  const revisions = useRef({
+    searchMode: 0,
+    showClosedTabs: 0,
+    closedTabsShortcut: 0,
+  });
   const mounted = useRef(false);
   const busy = useRef(false);
 
@@ -106,21 +119,12 @@ export function useSearchPreferences() {
       try {
         // Write only changed fields so another window's preferences stay intact.
         await chrome.storage.local.set(next);
-        if (
-          next.searchMode !== undefined &&
-          revisions.current.searchMode === beforeWrite.searchMode
-        ) {
-          saved.current = { ...saved.current, searchMode: next.searchMode };
-        }
-        if (
-          next.showClosedTabs !== undefined &&
-          revisions.current.showClosedTabs === beforeWrite.showClosedTabs
-        ) {
-          saved.current = {
-            ...saved.current,
-            showClosedTabs: next.showClosedTabs,
-          };
-        }
+        for (const key of KEYS)
+          if (
+            next[key] !== undefined &&
+            revisions.current[key] === beforeWrite[key]
+          )
+            saved.current = { ...saved.current, [key]: next[key] };
       } catch {
         if (mounted.current) {
           setPreferences(saved.current);

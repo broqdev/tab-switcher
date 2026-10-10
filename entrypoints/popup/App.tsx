@@ -26,6 +26,7 @@ import {
   type SearchPreferences,
 } from '../../lib/use-search-preferences';
 import Settings from '../../components/settings/Settings';
+import { formatShortcut, matchesShortcut } from '../../lib/popup-shortcut';
 
 const resultShortcut = navigator.platform.startsWith('Mac')
   ? '⌥1–9'
@@ -133,6 +134,7 @@ export default function App() {
   const {
     searchMode: mode,
     showClosedTabs: showClosed,
+    closedTabsShortcut,
     ready: preferenceReady,
     saving: preferenceSaving,
     error: preferenceError,
@@ -149,6 +151,7 @@ export default function App() {
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState<OpenTab>();
   const searchRef = useRef<HTMLInputElement>(null);
+  const cancelShortcutFocus = useRef<() => void>(undefined);
   const switchingRef = useRef(false);
   const closingRef = useRef(false);
   const {
@@ -253,7 +256,10 @@ export default function App() {
   useEffect(() => {
     searchRef.current?.focus();
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      cancelShortcutFocus.current?.();
+    };
   }, []);
   async function activate(tab: TabEntry) {
     if (
@@ -347,6 +353,38 @@ export default function App() {
       return;
     }
     if (settingsOpen) return;
+    if (matchesShortcut(event, closedTabsShortcut)) {
+      event.preventDefault();
+      // macOS Chrome starts dead-key composition even after preventDefault.
+      // Temporarily leave the text-input context so the native IME cancels
+      // this consumed accent before returning focus and the selection.
+      const input = searchRef.current;
+      if (event.key === 'Dead' && input) {
+        cancelShortcutFocus.current?.();
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        const direction = input.selectionDirection;
+        input.blur();
+        const frame = requestAnimationFrame(() => {
+          cancelShortcutFocus.current = undefined;
+          if (!document.hasFocus()) return;
+          input.focus({ preventScroll: true });
+          input.setSelectionRange(start, end, direction ?? undefined);
+        });
+        cancelShortcutFocus.current = () => cancelAnimationFrame(frame);
+      }
+      if (
+        event.repeat ||
+        !preferenceReady ||
+        preferenceSaving ||
+        switchingRef.current ||
+        closingRef.current
+      )
+        return;
+      changePreferences({ showClosedTabs: !showClosed });
+      if (!cancelShortcutFocus.current) searchRef.current?.focus();
+      return;
+    }
     if (
       event.altKey &&
       !event.ctrlKey &&
@@ -454,7 +492,9 @@ export default function App() {
           } (${resultShortcut} to select)`}
           value={query}
           onFocus={() => setSettingsOpen(false)}
-          onChange={(event) => changeQuery(event.target.value)}
+          onChange={(event) => {
+            if (!cancelShortcutFocus.current) changeQuery(event.target.value);
+          }}
           aria-label="Search tabs and history by title or URL"
           role="combobox"
           aria-autocomplete="list"
@@ -519,6 +559,8 @@ export default function App() {
         <label className="history-filter">
           <input
             type="checkbox"
+            aria-label="Show closed tabs"
+            aria-describedby="closed-tabs-shortcut-hint"
             checked={showClosed}
             disabled={!preferenceReady || preferenceSaving}
             onChange={(event) =>
@@ -526,6 +568,14 @@ export default function App() {
             }
           />
           Show closed tabs
+          <span id="closed-tabs-shortcut-hint">
+            (
+            {formatShortcut(
+              closedTabsShortcut,
+              navigator.platform.startsWith('Mac'),
+            )}
+            )
+          </span>
         </label>
         <div className={`settings-tab${settingsOpen ? ' active' : ''}`}>
           <button
@@ -563,7 +613,15 @@ export default function App() {
           className="settings-panel"
           aria-labelledby="settings-toggle"
         >
-          <Settings />
+          <Settings
+            shortcut={closedTabsShortcut}
+            ready={preferenceReady}
+            saving={preferenceSaving}
+            error={preferenceError}
+            onChange={(shortcut) =>
+              void updatePreferences({ closedTabsShortcut: shortcut })
+            }
+          />
         </section>
       )}
 

@@ -139,6 +139,16 @@
   const preferenceKey = 'tab-switcher-preview-show-closed';
   const searchModeKey = 'tab-switcher-preview-search-mode';
   const historyLimitKey = 'tab-switcher-preview-history-limit';
+  const closedShortcutKey = 'tab-switcher-preview-closed-shortcut';
+  const readClosedShortcut = (
+    value = localStorage.getItem(closedShortcutKey),
+  ) => {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  };
   const readHistoryLimit = (value = localStorage.getItem(historyLimitKey)) => {
     const limit = value === null ? undefined : Number(value);
     return Number.isInteger(limit) && limit >= 1 && limit <= 10_000
@@ -150,6 +160,16 @@
   const readSearchMode = (value = localStorage.getItem(searchModeKey)) =>
     value === 'exact' || value === 'regex' ? value : 'fuzzy';
   window.addEventListener('storage', (change) => {
+    if (change.key === closedShortcutKey || change.key === null)
+      storageEvent.emit(
+        {
+          closedTabsShortcut: {
+            oldValue: readClosedShortcut(change.oldValue),
+            newValue: readClosedShortcut(),
+          },
+        },
+        'local',
+      );
     if (change.key === searchModeKey || change.key === null)
       storageEvent.emit(
         {
@@ -283,9 +303,21 @@
           historyLimit: readHistoryLimit(),
           showClosedTabs: readPreference(),
           searchMode: readSearchMode(),
+          closedTabsShortcut: readClosedShortcut(),
         }),
         set: async (values) => {
           const changes = {};
+          if (values.closedTabsShortcut) {
+            const oldValue = readClosedShortcut();
+            localStorage.setItem(
+              closedShortcutKey,
+              JSON.stringify(values.closedTabsShortcut),
+            );
+            changes.closedTabsShortcut = {
+              oldValue,
+              newValue: values.closedTabsShortcut,
+            };
+          }
           if (['fuzzy', 'exact', 'regex'].includes(values.searchMode)) {
             const oldValue = readSearchMode();
             localStorage.setItem(searchModeKey, values.searchMode);
